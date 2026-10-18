@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+﻿import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { App } from '../src/app/App';
 import { PROGRESS_STORAGE_KEY, getDefaultProgress } from '../src/storage/persistence';
@@ -33,7 +33,7 @@ afterEach(() => {
 describe('用户流程冒烟测试（足球经理题材）', () => {
   it('从主页进入战术板，完整走完一关并解锁下一关', () => {
     render(<App />);
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toContain('经理修理铺');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toContain('足球经理修理铺');
     expect(screen.getByText('委托板')).toBeTruthy();
 
     fireEvent.click(screen.getAllByRole('button', { name: '开始维修' })[0]);
@@ -68,7 +68,7 @@ describe('用户流程冒烟测试（足球经理题材）', () => {
     clickButton(/完成归档/);
 
     // finishArchive 会返回主页并写入正式进度。
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toContain('经理修理铺');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toContain('足球经理修理铺');
     expect(screen.getAllByText(/已完成 1 \/ 4/).length).toBeGreaterThan(0);
     const raw = window.localStorage.getItem(PROGRESS_STORAGE_KEY);
     expect(raw).toBeTruthy();
@@ -161,7 +161,7 @@ describe('用户流程冒烟测试（足球经理题材）', () => {
     clickButton('重置全部进度');
     expect(screen.getByRole('dialog', { name: '确定重置全部进度？' })).toBeTruthy();
     clickButton('确认重置');
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toContain('经理修理铺');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toContain('足球经理修理铺');
     expect(screen.getAllByText(/已完成 0 \/ 4/).length).toBeGreaterThan(0);
 
     const raw = window.localStorage.getItem(PROGRESS_STORAGE_KEY);

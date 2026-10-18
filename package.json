@@ -1,7 +1,8 @@
 {
   "name": "manager-repair-shop",
   "private": true,
-  "version": "5.0.0",
+  "version": "5.1.0",
+  "description": "足球经理修理铺——非官方的足球经理机制教学游戏",
   "type": "module",
   "scripts": {
     "dev": "vite",

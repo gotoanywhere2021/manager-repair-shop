@@ -1,6 +1,6 @@
-# 经理修理铺
+# 足球经理修理铺
 
-> 把不好玩的足球经理，修成有选择的足球经理。
+> 修好四个坏系统，看懂每个选择。
 
 **在线试玩：** https://gotoanywhere2021.github.io/manager-repair-shop/
 **GitHub 仓库：** https://github.com/gotoanywhere2021/manager-repair-shop
@@ -8,7 +8,7 @@
 [![CI](https://github.com/gotoanywhere2021/manager-repair-shop/actions/workflows/ci.yml/badge.svg)](https://github.com/gotoanywhere2021/manager-repair-shop/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-一个可以直接在浏览器里玩的足球经理教学游戏。你扮演俱乐部系统修理工：先试玩一个坏掉的俱乐部系统，再亲手安装战术、球探、转会与注册规则，调整参数、再次试玩，用真实的比赛记录、球探报告和注册名单理解「规则怎样改变选择」。
+一个可以直接在浏览器里玩的足球经理教学游戏。你扮演俱乐部系统修理工：先试玩坏掉的战术、球探、转会与注册，再亲手装上能跑起来的规则；用比赛记录、球探报告和注册名单，看清每个选择从哪里来、又要付出什么。
 
 - 技术栈：React 19 + TypeScript + Vite，Vitest 做规则测试。
 - 无后端、无付费 API、无密钥、无外部图片 CDN；进度保存在浏览器 localStorage。
@@ -17,6 +17,12 @@
 - 维修不再是唯一正确路径：每关有「正确模块 + 有副作用的错误模块」组成的模块池，允许装错、验证失败、回到维修台重试。
 
 ---
+
+## 本轮更新（v5.1.0）
+
+- 游戏名改为 **《足球经理修理铺》**。
+- 主标语改为「修好四个坏系统，看懂每个选择。」；首屏说明改成更具体的动作与结果，不再用「不好玩/有选择」这类抽象对比。
+- 浏览器标题、分享描述、展示模式口播、README 与机制导读同步更新。
 
 ## 本轮改进（v5.0.0）
 

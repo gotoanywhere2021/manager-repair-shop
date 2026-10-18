@@ -1,5 +1,5 @@
 /* ==========================================================================
-   《经理修理铺》全局样式：俱乐部工作台 + 战术板 + 卡牌规则工具
+   《足球经理修理铺》全局样式：俱乐部工作台 + 战术板 + 卡牌规则工具
    ========================================================================== */
 
 :root {
@@ -2493,6 +2493,15 @@ html[data-reduce-motion='true'] *::after {
     width: 100%;
   }
 
+  .bench-arrow {
+    display: none;
+  }
+
+  .bench-mechanism {
+    left: 16px;
+    bottom: 16px;
+  }
+
   .how-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2562,27 +2571,37 @@ html[data-reduce-motion='true'] *::after {
   }
 
   .hero-visual {
-    min-height: 280px;
+    min-height: 250px;
   }
 
   .bench-card {
-    width: 180px;
-    padding: 12px 14px;
+    width: calc(50% - 12px);
+    padding: 10px 12px;
+  }
+
+  .bench-card strong {
+    font-size: 13.5px;
+  }
+
+  .bench-card p {
+    font-size: 10.5px;
   }
 
   .bench-commission {
-    left: 0;
+    top: 14px;
+    left: 6px;
+    transform: rotate(-2deg);
   }
 
-  .bench-mechanism {
-    left: 24px;
-    bottom: 14px;
+  .bench-module {
+    top: 14px;
+    right: 6px;
+    transform: rotate(2deg);
   }
 
+  .bench-mechanism,
   .bench-arrow {
-    right: 4px;
-    bottom: 46px;
-    font-size: 10px;
+    display: none;
   }
 
   .how-strip {

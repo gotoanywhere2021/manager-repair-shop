@@ -40,12 +40,12 @@ export function HomeScreen() {
         <div className="hero-copy">
           <p className="eyebrow">俱乐部系统维修台 · 足球经理教学实验</p>
           <h1 className="hero-title">
-            经理<span className="hero-title-accent">修理铺</span>
+            足球经理<span className="hero-title-accent">修理铺</span>
           </h1>
-          <p className="hero-tagline">把不好玩的足球经理，修成有选择的足球经理。</p>
+          <p className="hero-tagline">修好四个坏系统，看懂每个选择。</p>
           <p className="hero-desc">
-            先试玩一个坏掉的俱乐部系统，再亲手装上战术、球探、转会与注册的真实规则，
-            用比赛记录、球探报告和注册名单，看见「选择」是怎么被改出来的。
+            先试玩坏掉的战术、球探、转会与注册，再亲手装上能跑起来的规则。
+            用比赛记录、球探报告和注册名单，看清每个选择从哪里来、又要付出什么。
           </p>
           <div className="hero-actions">
             <Button size="lg" onClick={() => startLevel(summary.nextLevel)}>
@@ -208,7 +208,7 @@ export function HomeScreen() {
           </button>
           。
         </p>
-        <p>《经理修理铺》v5.0 · 非官方足球经理题材 · 进度保存在本机浏览器。</p>
+        <p>《足球经理修理铺》v5.1 · 非官方足球经理题材 · 进度保存在本机浏览器。</p>
       </footer>
     </div>
   );
