@@ -28,6 +28,7 @@ import {
   POSSESSION_PRESETS,
   REFLECTION_OPTIONS,
   REGIONS,
+  REWORK_COST,
   SCOUT_COUNT,
   SQUAD_LIMIT,
   SQUAD_MODULE_IDS,
@@ -40,7 +41,9 @@ import {
   assignScout,
   budgetCap,
   buildCounterfactual,
+  buildSquadClubPatch,
   buildSquadClubUpdate,
+  buildSquadSeasonReport,
   canSignCandidate,
   checkMicroList,
   checkRegistration,
@@ -50,7 +53,6 @@ import {
   createSquadState,
   evaluateGoals,
   evaluateRegistration,
-  feeUsed,
   finishMicroTeaching,
   finishSigning,
   formatSquadFee,
@@ -63,6 +65,8 @@ import {
   restartRun,
   requiredSignings,
   reviveSquadState,
+  reworkCostPaid,
+  reworkCount,
   rosterGroups,
   scoutAssignmentsTotal,
   setMatchDecision,
@@ -151,10 +155,10 @@ function RegistrationChecklist({ result }: { result: RegistrationResult }) {
   );
 }
 
-/** 名单槽位：现有 21 人与新援按位置分组，缺口用空槽显示。 */
+/** 名单槽位：现有 21 人、转会窗引援与注册日新援按位置分组，缺口用空槽显示。 */
 function RosterSlots({ state, compact = false }: { state: SquadState; compact?: boolean }) {
   const groups: RosterGroup[] = rosterGroups(state);
-  const filled = BASE_SQUAD_TOTAL + state.signings.length;
+  const filled = BASE_SQUAD_TOTAL + state.inheritedSignings.length + state.signings.length;
   const empty = Math.max(0, SQUAD_LIMIT - filled);
   return (
     <div className={`squad-roster${compact ? ' is-compact' : ''}`}>
@@ -176,8 +180,17 @@ function RosterSlots({ state, compact = false }: { state: SquadState; compact?: 
             </header>
             <ul>
               {group.players.map((player) => (
-                <li key={player.id} className={player.signed ? 'is-new' : ''}>
+                <li
+                  key={player.id}
+                  className={`${player.signed ? 'is-new' : ''}${player.inherited ? ' is-inherited' : ''}`}
+                  title={player.inherited ? '已在转会窗签下' : undefined}
+                >
                   {player.name}
+                  {player.inherited && (
+                    <span className="squad-inherited-dot" aria-label="转会窗引援">
+                      窗
+                    </span>
+                  )}
                   {player.youth && (
                     <span className="squad-youth-dot" title="本土青训" aria-label="本土青训">
                       青
@@ -218,6 +231,27 @@ function GoalsList({ state }: { state: SquadState }) {
   );
 }
 
+function InheritedSignings({ state }: { state: SquadState }) {
+  if (state.inheritedSignings.length === 0) return null;
+  return (
+    <section className="squad-subsection">
+      <h3 className="squad-subtitle">已在转会窗签下（直接计入名单）</h3>
+      <ul className="squad-inherited-list">
+        {state.inheritedSignings.map((signing) => (
+          <li key={signing.id}>
+            <strong>{signing.name}</strong>
+            <span>{signing.position}</span>
+            <span>{formatSquadFee(signing.fee * 100)}</span>
+            <span>{formatSquadWage(signing.wage)}</span>
+            {signing.homegrown && <Chip tone="purple">本土青训</Chip>}
+          </li>
+        ))}
+      </ul>
+      <p className="squad-muted">这些球员占用名单名额与位置覆盖；他们的转会费/工资已在转会窗扣除，本关不重复扣预算。</p>
+    </section>
+  );
+}
+
 function SettlementContent({ state }: { state: SquadState }) {
   const registration = state.registration ?? evaluateRegistration(state);
   const signed = state.signings
@@ -232,17 +266,32 @@ function SettlementContent({ state }: { state: SquadState }) {
   return (
     <div className="squad-settlement">
       <div className="squad-stat-row">
-        <StatTile label="名单人数" value={`${registration.total} / ${SQUAD_LIMIT}`} hint={`现有 ${BASE_SQUAD_TOTAL} 人 + 新援 ${state.signings.length} 人`} />
-        <StatTile label="本土青训" value={`${registration.youth} / ${YOUTH_MIN}`} tone={registration.youth >= YOUTH_MIN ? 'green' : 'red'} />
-        <StatTile label="转会预算使用" value={formatSquadFee(feeUsed(state))} hint={`上限 ${formatSquadFee(budgetCap(state))}`} />
+        <StatTile
+          label="名单人数"
+          value={`${registration.total} / ${SQUAD_LIMIT}`}
+          hint={`现有 ${BASE_SQUAD_TOTAL} 人 + 转会窗 ${state.inheritedSignings.length} 人 + 本关 ${state.signings.length} 人`}
+        />
+        <StatTile
+          label="本土青训"
+          value={`${registration.youth} / ${YOUTH_MIN}`}
+          tone={registration.youth >= YOUTH_MIN ? 'green' : 'red'}
+        />
+        <StatTile label="本关转会预算" value={formatSquadFee(Math.max(0, remainingBudget(state)))} hint={`可用 ${formatSquadFee(budgetCap(state))}`} />
         <StatTile
           label="周薪使用"
           value={formatSquadWage(wageUsed(state))}
           hint={`上限 ${formatSquadWage(wageCap(state))}`}
           tone={wageUsed(state) <= wageCap(state) ? 'green' : 'red'}
         />
+        <StatTile
+          label="返工成本"
+          value={formatSquadFee(reworkCostPaid(state))}
+          hint={`返工 ${reworkCount(state)} 次`}
+          tone={reworkCount(state) > 0 ? 'amber' : 'neutral'}
+        />
       </div>
 
+      <InheritedSignings state={state} />
       <RosterSlots state={state} />
 
       <section className="squad-subsection">
@@ -319,13 +368,9 @@ function SettlementContent({ state }: { state: SquadState }) {
         <ul className="squad-module-summary">
           {SQUAD_MODULE_IDS.map((id) => (
             <li key={id}>
-              <Chip tone={state.modules[id] ? (MODULE_ALIAS[id] ? 'green' : 'red') : 'neutral'}>
-                {state.modules[id] ? '已启用' : '未启用'}
-              </Chip>
+              <Chip tone={state.modules[id] ? 'green' : 'neutral'}>{state.modules[id] ? '已启用' : '未启用'}</Chip>
               <span>{MODULE_LABELS[id]}</span>
-              {state.modules[id] && !MODULE_ALIAS[id] && (
-                <span className="squad-muted">{MODULE_DEGRADE_NOTES[id]}</span>
-              )}
+              {state.modules[id] && <span className="squad-muted">{MODULE_DEGRADE_NOTES[id]}</span>}
             </li>
           ))}
         </ul>
@@ -344,6 +389,7 @@ export function SquadLevel({
   mode,
   fastStart,
   showcaseOptions,
+  club,
   savedState,
   onSaveState,
   onComplete,
@@ -357,6 +403,7 @@ export function SquadLevel({
       seed: showcaseOptions?.seed ?? randomSeed(),
       fastStart,
       showcaseOptions,
+      club,
     });
   });
   const [notice, setNotice] = useState<string | null>(null);
@@ -384,6 +431,7 @@ export function SquadLevel({
       evidence: state.evidence,
       summary: squadSummaryLines(state),
       clubUpdate: buildSquadClubUpdate(state),
+      clubPatch: buildSquadClubPatch(state),
     });
   }
   useEffect(() => {
@@ -407,16 +455,39 @@ export function SquadLevel({
   const goalList = evaluateGoals(state);
   const counterfactual = buildCounterfactual(state);
   const clubUpdate = buildSquadClubUpdate(state);
+  const seasonReport = buildSquadSeasonReport(state);
   const archiveProblems = squadArchiveProblems(state);
 
   const sideContent = (
     <>
+      <Panel
+        title="俱乐部状态"
+        subtitle={mode === 'showcase' ? '演示模式：使用默认预算，不写正式进度' : '跨关资源，返工真实扣钱'}
+        actions={<Chip tone={reworkCount(state) > 0 ? 'amber' : 'neutral'}>返工 {reworkCount(state)} 次</Chip>}
+      >
+        <RuleList
+          items={[
+            { label: '转会窗已签', value: `${state.inheritedSignings.length} 人` },
+            { label: '本关起始预算', value: formatSquadFee(state.startTransferBudget) },
+            { label: '当前可用预算', value: formatSquadFee(budgetCap(state)) },
+            { label: '俱乐部工资空间', value: formatSquadWage(state.startWageRoom) },
+            { label: '俱乐部历史返工', value: `${state.clubFailures} 次` },
+            { label: '本关返工成本', value: formatSquadFee(reworkCostPaid(state)) },
+          ]}
+        />
+        <p className="squad-muted">
+          每次注册/目标未达成后重新配置：俱乐部承担 {formatSquadFee(REWORK_COST)} 返工成本（紧急处理），转会预算将受影响（最低 0）。
+        </p>
+      </Panel>
       {mode === 'showcase' && (
         <Panel title="演示模式" tone="amber">
           <p className="squad-muted">
-            固定种子 {showcaseOptions?.seed ?? '—'}；{state.fastPlay ? '短局参数：签下 2 人、注册检查从简。' : '完整流程。'}
+            固定种子 {showcaseOptions?.seed ?? '—'}；
+            {state.fastPlay ? '短局参数：签下 2 人、注册检查从简。' : '完整流程。'}
           </p>
-          {state.skippedReflection && <p className="squad-muted">本局已标注「演示跳过反事实与反思题」，不计入 transferred。</p>}
+          {state.skippedReflection && (
+            <p className="squad-muted">本局已标注「演示跳过反事实与反思题」，不计入 transferred。</p>
+          )}
         </Panel>
       )}
       <Panel title="注册规则" subtitle="四个约束同时生效">
@@ -426,13 +497,12 @@ export function SquadLevel({
         <ul className="squad-side-modules">
           {SQUAD_MODULE_IDS.map((id) => (
             <li key={id}>
-              <Chip tone={state.modules[id] ? (MODULE_ALIAS[id] ? 'green' : 'red') : 'neutral'}>
-                {state.modules[id] ? '已启用' : '未启用'}
-              </Chip>
+              <Chip tone={state.modules[id] ? 'green' : 'neutral'}>{state.modules[id] ? '已启用' : '未启用'}</Chip>
               <span>{MODULE_LABELS[id]}</span>
             </li>
           ))}
         </ul>
+        <p className="squad-muted">模块只显示实际效果与副作用；装什么、怎么组合由你判断。</p>
       </Panel>
       <Panel
         title="三项目标"
@@ -473,7 +543,8 @@ export function SquadLevel({
           </p>
           <ul className="squad-objective-list">
             <li>先做一段可操作的注册微教学：两份 25 人名单为什么一份被退回。</li>
-            <li>从模块池里装上正确系统，别被「无视注册规则」「全权交给经纪人」带偏。</li>
+            <li>转会窗已经签下的人会直接进入名单；本关要用剩余预算与工资空间补齐注册要求。</li>
+            <li>模块只写效果与副作用，要装哪些由你判断；正式流程开始后锁定。</li>
             <li>用 2 名球探考察 3 个区域，在预算与工资内签人，让名单通过实时注册校验。</li>
           </ul>
           <p className="squad-muted">毕业关没有最低积分：只看三项目标是否有规则与真实操作证据。</p>
@@ -532,10 +603,9 @@ export function SquadLevel({
 
       {state.phase === 'repair' && (
         <Panel title="维修 · 从模块池里拼出可注册的名单" subtitle="六个模块都能开关；正式名单流程开始后锁定，修改必须回到维修台">
-          <Callout tone="amber" title="模块池里有两张诱人的错误卡" icon="⚠">
-            「无视注册规则」会跳过检查，让名单直接放行，但目标三永远无法达成；
-            「全权交给经纪人」让签约不再被预算/工资拦住，却把预算与工资上限各砍 10%，注册时照样会翻车。
-            正确模块没装齐也能开始流程，但结果会真实变差，归档会被逻辑阻止。
+          <Callout tone="neutral" title="怎么选模块">
+            6 张卡都没有对错标签，只有真实效果与副作用。有些卡会跳过检查、砍预算或让注册失败；
+            自己判断要装哪些、要承担什么代价。正式名单流程开始后模块锁定。
           </Callout>
           <div className="squad-module-grid">
             {SQUAD_MODULE_IDS.map((id) => {
@@ -544,7 +614,6 @@ export function SquadLevel({
                 : undefined;
               const wrong = id === 'ignoreRegistration' || id === 'agent' ? WRONG_MODULE_INFO[id] : undefined;
               const installed = state.modules[id];
-              const risky = !MODULE_ALIAS[id];
               return (
                 <ModuleCard
                   key={id}
@@ -555,50 +624,45 @@ export function SquadLevel({
                   installed={installed}
                   onToggle={() => apply(setSquadModule(state, id, !installed))}
                   badge={
-                    <span className={`squad-module-badge${risky ? (installed ? ' is-wrong' : ' is-wrong-hint') : installed ? ' is-on' : ' is-off'}`}>
-                      {risky
-                        ? installed
-                          ? '错误模块已生效：结果会被真实拖差'
-                          : '错误模块：装上会真实拖差'
-                        : installed
-                          ? '正确模块：规则生效中（目标需要它）'
-                          : '正确模块：未启用'}
+                    <span className="squad-module-badge">
+                      {installed ? '已启用：实际效果见上方说明' : '未启用：点击安装后按上方说明生效'}
                     </span>
                   }
                 />
               );
             })}
           </div>
-          <Callout tone="purple" title="三项目标需要哪些模块">
-            目标一需要双形态战术，目标二需要球探网络，目标三需要阵容注册；转会谈判决定签约有没有预算与工资代价。
-            结算时会显示哪条没达成，并提供「回到维修台重新配置」。
+          <Callout tone="purple" title="名单流程会检验什么">
+            三项目标分别检验战术、球探与注册是否有规则和真实操作证据；哪些模块能支撑这些目标，
+            从每张卡的实际效果与副作用自己判断。结算时会显示哪条没达成，并提供「回到维修台重新配置」。
           </Callout>
           {!(state.modules.tactics && state.modules.scouting && state.modules.registration) && (
-            <Callout tone="amber" title="注意：目标模块还没有全部启用" icon="⚠">
-              未启用：
-              {[
-                !state.modules.tactics ? '双形态战术（目标一）' : '',
-                !state.modules.scouting ? '球探网络（目标二）' : '',
-                !state.modules.registration ? '阵容注册（目标三）' : '',
-              ]
-                .filter(Boolean)
-                .join('、')}
-              。这样开始流程会体验退化规则，但这几项目标不会达成。
+            <Callout tone="amber" title="注意：有规则还没有启用" icon="⚠">
+              仍然可以开始正式名单流程，但相关目标可能无法达成；失败后可以回到维修台重新配置（俱乐部承担返工成本）。
             </Callout>
           )}
           <div className="squad-actions">
             <Button onClick={() => apply(startFlow(state))}>开始正式名单流程</Button>
-            <span className="squad-muted">开始后模块锁定；失败或目标未达成时，回到维修台重新配置会清空本轮名单流程成绩。</span>
+            <span className="squad-muted">
+              开始后模块锁定；失败或目标未达成时，回到维修台重新配置会清空本轮名单流程成绩并扣返工成本。
+            </span>
           </div>
         </Panel>
       )}
 
       {state.phase === 'verify' && (
-        <Panel title="名单流程" subtitle={`第 ${state.signings.length} / ${requiredSignings(state)} 签 · ${FLOW_STEPS.find((step) => step.id === state.step)?.label ?? ''}`}>
+        <Panel
+          title="名单流程"
+          subtitle={`第 ${state.signings.length} / ${requiredSignings(state)} 签 · ${
+            FLOW_STEPS.find((step) => step.id === state.step)?.label ?? ''
+          }`}
+        >
           <ol className="squad-flow-rail" aria-label="名单流程步骤">
             {FLOW_STEPS.map((step) => {
               const active = step.id === state.step;
-              const done = FLOW_STEPS.findIndex((item) => item.id === step.id) < FLOW_STEPS.findIndex((item) => item.id === state.step);
+              const done =
+                FLOW_STEPS.findIndex((item) => item.id === step.id) <
+                FLOW_STEPS.findIndex((item) => item.id === state.step);
               return (
                 <li key={step.id} className={`squad-flow-step${active ? ' is-active' : ''}${done ? ' is-done' : ''}`}>
                   <span aria-hidden="true">{done ? '✓' : active ? '●' : '○'}</span>
@@ -632,7 +696,9 @@ export function SquadLevel({
                           <p className="squad-region-name">{region.name}</p>
                           <p className="squad-muted">{region.description}</p>
                         </div>
-                        <Chip tone={assigned > 0 ? 'green' : 'neutral'}>{assigned > 0 ? `球探 ${assigned}` : '未派遣'}</Chip>
+                        <Chip tone={assigned > 0 ? 'green' : 'neutral'}>
+                          {assigned > 0 ? `球探 ${assigned}` : '未派遣'}
+                        </Chip>
                       </header>
                       <Meter
                         label={state.modules.scouting ? '知识度' : '知识度（退化 100）'}
@@ -679,7 +745,9 @@ export function SquadLevel({
                 <Button onClick={() => apply(confirmScout(state))} disabled={state.scouts.confirmed}>
                   {state.modules.scouting ? '完成 1 轮考察，进入转会' : '跳过考察（球探未启用），进入转会'}
                 </Button>
-                <span className="squad-muted">已派遣 {scoutAssignmentsTotal(state)} / {SCOUT_COUNT} 名球探。</span>
+                <span className="squad-muted">
+                  已派遣 {scoutAssignmentsTotal(state)} / {SCOUT_COUNT} 名球探。
+                </span>
               </div>
             </div>
           )}
@@ -690,7 +758,7 @@ export function SquadLevel({
                 <StatTile
                   label="可用转会预算"
                   value={formatSquadFee(remainingBudget(state))}
-                  hint={`上限 ${formatSquadFee(budgetCap(state))}${state.modules.agent ? '（经纪人 -10%）' : ''}`}
+                  hint={`可用 ${formatSquadFee(budgetCap(state))}${state.modules.agent ? '（经纪人 -10%）' : ''}`}
                   tone={state.modules.agent ? 'amber' : 'purple'}
                 />
                 <StatTile
@@ -710,7 +778,14 @@ export function SquadLevel({
                   hint={`青训 ${registration.youth}/${YOUTH_MIN}`}
                   tone={state.modules.ignoreRegistration ? 'amber' : registration.passed ? 'green' : 'red'}
                 />
+                <StatTile
+                  label="返工成本"
+                  value={formatSquadFee(reworkCostPaid(state))}
+                  hint={`返工 ${reworkCount(state)} 次`}
+                  tone={reworkCount(state) > 0 ? 'amber' : 'neutral'}
+                />
               </div>
+              <InheritedSignings state={state} />
               {state.modules.ignoreRegistration && (
                 <Callout tone="red" title="「无视注册规则」已启用" icon="⚠">
                   注册检查会被跳过，名单可以直接放行——但目标三永远无法达成，你也看不到真实缺口。
@@ -732,11 +807,7 @@ export function SquadLevel({
                 <div className="squad-live-head">
                   <h3 className="squad-subtitle">实时注册校验器</h3>
                   <Chip tone={state.modules.ignoreRegistration ? 'amber' : registration.passed ? 'green' : 'red'}>
-                    {state.modules.ignoreRegistration
-                      ? '已跳过'
-                      : registration.passed
-                        ? '当前名单可通过'
-                        : '当前名单未通过'}
+                    {state.modules.ignoreRegistration ? '已跳过' : registration.passed ? '当前名单可通过' : '当前名单未通过'}
                   </Chip>
                 </div>
                 <RosterSlots state={state} compact />
@@ -753,7 +824,8 @@ export function SquadLevel({
                         <div>
                           <p className="squad-candidate-name">{candidate.name}</p>
                           <p className="squad-muted">
-                            {POSITION_LABELS[candidate.position]} · {REGIONS.find((region) => region.id === candidate.region)?.name}
+                            {POSITION_LABELS[candidate.position]} ·{' '}
+                            {REGIONS.find((region) => region.id === candidate.region)?.name}
                           </p>
                         </div>
                         {candidate.youth ? <Chip tone="purple">本土青训</Chip> : <Chip tone="neutral">非青训</Chip>}
@@ -770,7 +842,9 @@ export function SquadLevel({
                         </div>
                       </dl>
                       {signed ? (
-                        <Chip tone="green" icon="✓">已签约</Chip>
+                        <Chip tone="green" icon="✓">
+                          已签约
+                        </Chip>
                       ) : (
                         <Button size="sm" disabled={!check.ok} onClick={() => apply(signCandidate(state, candidate.id))}>
                           签下 {candidate.name}
@@ -782,10 +856,15 @@ export function SquadLevel({
                 })}
               </ul>
               <div className="squad-actions">
-                <Button onClick={() => apply(finishSigning(state))} disabled={state.signings.length === 0}>
+                <Button
+                  onClick={() => apply(finishSigning(state))}
+                  disabled={state.signings.length === 0 && requiredSignings(state) > 0}
+                >
                   结束签约，进入战术阶段
                 </Button>
-                <span className="squad-muted">本次需要签下 {requiredSignings(state)} 人；少签会导致名单人数或目标不完整。</span>
+                <span className="squad-muted">
+                  本次需要签下 {requiredSignings(state)} 人；少签会导致名单人数或目标不完整。
+                </span>
               </div>
             </div>
           )}
@@ -801,26 +880,43 @@ export function SquadLevel({
                 </>
               ) : (
                 <>
+                  <p className="squad-muted">
+                    有球 / 无球形态已按上一关战术板预填（没有则未选择）；可以选择别的方案，比赛阶段决策需要自己定。
+                  </p>
                   <PresetPicker
                     label="有球形态"
-                    options={POSSESSION_PRESETS.map((preset) => ({ id: preset.id, name: preset.name, description: preset.description }))}
+                    options={POSSESSION_PRESETS.map((preset) => ({
+                      id: preset.id,
+                      name: preset.name,
+                      description: preset.description,
+                    }))}
                     value={state.tactics.possessionId ?? '未选择'}
                     onChange={(id) => apply(setPossessionShape(state, id))}
                   />
                   <PresetPicker
                     label="无球形态"
-                    options={OUT_PRESETS.map((preset) => ({ id: preset.id, name: preset.name, description: preset.description }))}
+                    options={OUT_PRESETS.map((preset) => ({
+                      id: preset.id,
+                      name: preset.name,
+                      description: preset.description,
+                    }))}
                     value={state.tactics.outId ?? '未选择'}
                     onChange={(id) => apply(setOutOfPossessionShape(state, id))}
                   />
                   <PresetPicker
                     label="比赛阶段决策（第 65 分钟，1-1）"
-                    options={MATCH_DECISIONS.map((preset) => ({ id: preset.id, name: preset.name, description: preset.description }))}
+                    options={MATCH_DECISIONS.map((preset) => ({
+                      id: preset.id,
+                      name: preset.name,
+                      description: preset.description,
+                    }))}
                     value={state.tactics.decisionId ?? '未选择'}
                     onChange={(id) => apply(setMatchDecision(state, id))}
                   />
                   {state.tactics.possessionId && state.tactics.outId && state.tactics.decisionId && (
-                    <p className="squad-tactics-preview">{state.tactics.matchReport ?? '提交后会显示这个比赛阶段的文字结果（不作为通关分数）。'}</p>
+                    <p className="squad-tactics-preview">
+                      {state.tactics.matchReport ?? '提交后会显示这个比赛阶段的文字结果（不作为通关分数）。'}
+                    </p>
                   )}
                   <Button
                     onClick={() => apply(confirmTactics(state))}
@@ -867,7 +963,7 @@ export function SquadLevel({
               {state.registration && state.registration.passed && state.signings.length < requiredSignings(state) && (
                 <Callout tone="amber" title="签约人数不足" icon="⚠">
                   本次只签下 {state.signings.length} 人，目标是 {requiredSignings(state)} 人；operatedMechanic 证据不会成立。
-                  可以回到维修台重新配置，补齐签约人数。
+                  回到维修台重新配置会记一次返工：俱乐部承担 {formatSquadFee(REWORK_COST)} 返工成本（紧急处理），转会预算将受影响。
                 </Callout>
               )}
               {state.registration && !state.registration.passed && (
@@ -876,7 +972,8 @@ export function SquadLevel({
                     .filter((item) => !item.passed)
                     .map((item) => `${item.label}：${item.actual} / ${item.required}`)
                     .join('；')}
-                  。调整目标需要回到维修台重新配置，模块与微教学会保留。
+                  。回到维修台重新配置会记一次返工：俱乐部承担 {formatSquadFee(REWORK_COST)} 返工成本（紧急处理），转会预算将受影响；
+                  模块与微教学会保留。
                 </Callout>
               )}
             </div>
@@ -895,8 +992,8 @@ export function SquadLevel({
           <section className="squad-subsection">
             <h3 className="squad-subtitle">反事实计算（按真实缺口动态生成）</h3>
             <p className="squad-muted">
-              当前名单 {registration.total} 人、本土青训 {registration.youth} 人、周薪 €{registration.wage}k / €{registration.wageCap}k。
-              下面这道题根据这份名单的真实数据生成。
+              当前名单 {registration.total} 人、本土青训 {registration.youth} 人、周薪 €{registration.wage}k / €
+              {registration.wageCap}k。下面这道题根据这份名单的真实数据生成。
             </p>
             <QuizCard
               question={counterfactual.question}
@@ -931,7 +1028,10 @@ export function SquadLevel({
               })}
             </ul>
             <div className="squad-actions">
-              <Button disabled={!reflectionChoice} onClick={() => reflectionChoice && apply(confirmReflection(state, reflectionChoice))}>
+              <Button
+                disabled={!reflectionChoice}
+                onClick={() => reflectionChoice && apply(confirmReflection(state, reflectionChoice))}
+              >
                 确认这条解释并归档
               </Button>
               {mode === 'showcase' && (
@@ -948,7 +1048,10 @@ export function SquadLevel({
                   <li key={problem}>{problem}</li>
                 ))}
               </ul>
-              <p className="squad-muted">归档会被逻辑阻止；回到维修台重新配置会清空本轮名单流程成绩，但保留模块与微教学。</p>
+              <p className="squad-muted">
+                归档会被逻辑阻止；回到维修台重新配置会清空本轮名单流程成绩，并记一次返工：俱乐部承担{' '}
+                {formatSquadFee(REWORK_COST)} 返工成本（紧急处理），转会预算将受影响（最低 0）。
+              </p>
               <Button variant="secondary" onClick={() => setConfirmRestart(true)}>
                 回到维修台重新配置
               </Button>
@@ -986,6 +1089,15 @@ export function SquadLevel({
               ))}
             </ul>
           </section>
+          <section className="squad-subsection">
+            <h3 className="squad-subtitle">赛季报告将写入俱乐部档案</h3>
+            <p className="squad-club-headline">{seasonReport.headline}</p>
+            <ul className="squad-club-details">
+              {seasonReport.details.map((detail) => (
+                <li key={detail.slice(0, 16)}>{detail}</li>
+              ))}
+            </ul>
+          </section>
           <Callout tone={complete ? 'green' : 'red'} title={complete ? '委托完成' : '还有目标没有达成'} icon={complete ? '✓' : '○'}>
             {complete ? (
               '三项目标都有对应规则与操作证据，名单通过注册检查。可以完成归档。'
@@ -996,7 +1108,10 @@ export function SquadLevel({
                     <li key={problem}>{problem}</li>
                   ))}
                 </ul>
-                <p className="squad-muted">归档会被逻辑阻止；回到维修台重新配置会清空名单流程成绩，但保留模块配置与微教学。</p>
+                <p className="squad-muted">
+                  归档会被逻辑阻止；回到维修台重新配置会清空名单流程成绩，并记一次返工：俱乐部承担{' '}
+                  {formatSquadFee(REWORK_COST)} 返工成本（紧急处理），转会预算将受影响。模块配置与微教学保留。
+                </p>
               </>
             )}
           </Callout>
@@ -1025,6 +1140,7 @@ export function SquadLevel({
         description={
           <p>
             会清空本次名单流程的球探、签约、战术与注册成绩，并回到维修阶段；已启用的模块与注册微教学会保留。
+            这次重配会记一次返工：俱乐部承担 {formatSquadFee(REWORK_COST)} 返工成本（紧急处理），转会预算将受影响（最低 0）。
             本轮验证的操作记录会被清空，之前的微教学与模块配置记录仍在日志里。
           </p>
         }

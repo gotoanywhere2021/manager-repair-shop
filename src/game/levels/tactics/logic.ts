@@ -13,6 +13,7 @@ import { recordEvent } from '../../engine/events';
 import type { RngState } from '../../engine/rng';
 import { createRng, isRngState, nextInt, nextUnit, normalizeSeed, reviveRng } from '../../engine/rng';
 import type {
+  ClubPatch,
   ClubUpdate,
   EventLogEntry,
   EventState,
@@ -60,7 +61,7 @@ export interface TacticsLoadout {
 }
 
 export interface TacticsState {
-  version: 2;
+  version: 3;
   phase: LevelPhase;
   mode: GameMode;
   fastPlay: boolean;
@@ -68,6 +69,10 @@ export interface TacticsState {
   rng: RngState;
   config: TacticsConfig;
   loadout: TacticsLoadout;
+  /** 进入本关时俱乐部剩余转会预算（百万欧）；展示模式为默认 45。 */
+  budget: number;
+  /** 本关验证未达成后返工次数，每次扣 €1M。 */
+  failureCount: number;
   fault: { played: FaultStageResult[]; done: boolean; demoPreloaded: boolean };
   diagnose: { resolved: boolean };
   verify: { results: VerifyStageResult[]; done: boolean; attempts: number };
@@ -81,6 +86,8 @@ export interface TacticsInitOptions {
   mode: GameMode;
   fastStart: boolean;
   showcaseOptions: ShowcaseOptions | null;
+  /** 正常模式由 props.club.transferBudget 传入；不传或展示模式用默认 45。 */
+  startingBudget?: number;
 }
 
 /* ==========================================================================
@@ -159,6 +166,26 @@ export const LONG_BALL_DELTAS: TacticsMetrics = {
 
 export const MAN_MARKING_CHANCE_BONUS = 1;
 export const LONG_BALL_CHANCE_PENALTY = 1;
+
+/** 俱乐部默认转会预算（百万欧）。 */
+export const DEFAULT_TRANSFER_BUDGET = 45;
+/** 每次验证未达成后的返工成本（百万欧）。 */
+export const RETRY_COST_MILLIONS = 1;
+
+export function normalizeBudget(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_TRANSFER_BUDGET;
+  return Math.max(0, Math.round(value * 10) / 10);
+}
+
+/** 本关结束时可提交给俱乐部的剩余转会预算（不会为负）。 */
+export function remainingBudget(state: Pick<TacticsState, 'budget' | 'failureCount'>): number {
+  return Math.max(0, Math.round((state.budget - state.failureCount * RETRY_COST_MILLIONS) * 10) / 10);
+}
+
+/** 预算展示：整数不带小数，返工扣款为 .5 时保留一位。 */
+export function formatBudgetM(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
 
 export function findTacticsModule(id: TacticsModuleId): TacticsModuleDefinition {
   const module = TACTICS_MODULES.find((item) => item.id === id);
@@ -647,8 +674,8 @@ export function evaluateTacticsVerification(state: TacticsState): TacticsVerific
   const targets: TargetCheck[] = [
     {
       id: 'modules',
-      label: '维修模块正确',
-      requirement: '安装双形态战术 + 职责分工，且没有错误模块',
+      label: '维修结构完整',
+      requirement: '两套站位与职责设置都已就位',
       actual: installedNames.length > 0 ? `已安装：${installedNames.join('、')}` : '没有安装任何模块',
       met: modulesCorrect,
     },
@@ -909,7 +936,7 @@ export function startRepair(state: TacticsState): TacticsState {
     label: '开始维修：模块池自由配置',
     before: { phase: 'diagnose' },
     after: { phase: 'repair' },
-    note: '两套形态负责站位，职责分工负责任务；错误模块也能装，但要承担真实副作用。',
+    note: '两套形态负责站位，职责分工负责任务；不同模块组合会带来不同收益与代价。',
   });
 }
 
@@ -927,7 +954,7 @@ export function installTacticsModule(state: TacticsState, id: TacticsModuleId): 
     label: `安装模块：${module.name}`,
     before: { slot: module.slot, installed: previous ?? '空' },
     after: { slot: module.slot, installed: module.name, effect: module.effect },
-    delta: module.correct ? '正确模块' : '错误模块（有副作用）',
+    delta: `模块已安装${module.correct ? '' : '（注意副作用）'}`,
     note: module.sideEffect,
   });
 }
@@ -1074,25 +1101,35 @@ export function chooseVerifyInstruction(state: TacticsState, instruction: Verify
   });
 }
 
-/** 验证失败后回到维修台：清空本轮成绩，保留故障证据，模块配置保留以便调整。 */
+/** 验证失败后回到维修台：清空本轮成绩，保留故障证据，模块配置保留以便调整；俱乐部扣 €1M 返工成本。 */
 export function retryVerification(state: TacticsState): TacticsState {
   if (state.phase !== 'verify' || !state.verify.done) return state;
   const verification = evaluateTacticsVerification(state);
   if (verification.passed) return state;
+  const costBefore = remainingBudget(state);
   const next: TacticsState = {
     ...state,
     phase: 'repair',
+    failureCount: state.failureCount + 1,
     verify: { results: [], done: false, attempts: state.verify.attempts + 1 },
   };
+  const costAfter = remainingBudget(next);
   return withEvent(next, 'repair', {
     action: 'retry-verification',
     label: '验证未达成：回到维修台重新配置',
-    before: { phase: 'verify', chancesFor: verification.totals.chancesFor, goalsAgainst: verification.totals.goalsAgainst },
-    after: { phase: 'repair', attempts: next.verify.attempts },
-    delta: `未达成 ${verification.failed.length} 项目标`,
+    before: {
+      phase: 'verify',
+      chancesFor: verification.totals.chancesFor,
+      goalsAgainst: verification.totals.goalsAgainst,
+      budget: costBefore,
+    },
+    after: { phase: 'repair', attempts: next.verify.attempts, budget: costAfter },
+    delta: `未达成 ${verification.failed.length} 项目标 · 扣 €${RETRY_COST_MILLIONS}M`,
     note: `未达成：${verification.failed
       .map((target) => `${target.label}（${target.actual}，要求 ${target.requirement}）`)
-      .join('；')}。本轮验证成绩已清空。`,
+      .join('；')}。俱乐部承担 €${RETRY_COST_MILLIONS}M 返工成本（修复费用），转会预算 €${formatBudgetM(
+      costBefore,
+    )}M → €${formatBudgetM(costAfter)}M；本轮验证成绩已清空。`,
   });
 }
 
@@ -1230,23 +1267,49 @@ export function buildClubUpdate(state: TacticsState): ClubUpdate {
   const out = OUT_SHAPE_OPTIONS.find((item) => item.id === config.outOfPossessionShape)?.name ?? config.outOfPossessionShape;
   const fullback = FULLBACK_DUTY_OPTIONS.find((item) => item.id === config.fullbackDuty)?.name ?? config.fullbackDuty;
   const pivot = PIVOT_DUTY_OPTIONS.find((item) => item.id === config.pivotDuty)?.name ?? config.pivotDuty;
+  const budget = remainingBudget(state);
+  const repairCost = state.failureCount * RETRY_COST_MILLIONS;
   return {
     headline: `战术板上线：边路丢球 ${fault.wingGoalsAgainst} → ${fixed.wingGoalsAgainst}，失球 ${fault.goalsAgainst} → ${fixed.goalsAgainst}`,
     details: [
       `故障版 ${state.fault.played.length} 个阶段：创造 ${fault.chancesFor} 次机会，失 ${fault.goalsAgainst} 球，其中边路丢 ${fault.wingGoalsAgainst} 球。`,
       `修复版 ${state.verify.results.length} 个阶段：有球 ${possession}、无球 ${out}，边后卫${fullback}、后腰${pivot}；创造 ${fixed.chancesFor} 次机会，失 ${fixed.goalsAgainst} 球，其中边路丢 ${fixed.wingGoalsAgainst} 球。`,
-      `代价与取舍：体能消耗 ${FAULT_METRICS.stamina} → ${metrics.stamina}（目标上限 ${TACTICS_TARGETS.staminaMax}）；边路保护 ${FAULT_METRICS.wingProtection} → ${metrics.wingProtection}，中路保护 ${FAULT_METRICS.centralProtection} → ${metrics.centralProtection}。`,
+      `代价与取舍：体能消耗 ${FAULT_METRICS.stamina} → ${metrics.stamina}（目标上限 ${TACTICS_TARGETS.staminaMax}）；返工 ${state.failureCount} 次，俱乐部承担 €${formatBudgetM(
+        repairCost,
+      )}M 修复成本，剩余转会预算 €${formatBudgetM(budget)}M。`,
       `验证目标全部达成：机会≥${state.verify.results.length * TACTICS_TARGETS.chancesPerStage}、失球≤${TACTICS_TARGETS.goalsAgainstMax}、边路丢球≤${TACTICS_TARGETS.wingGoalsAgainstMax}、体能≤${TACTICS_TARGETS.staminaMax}。`,
     ],
     nextBrief: '球探室还在用「点一下就看到全部属性」的老办法，首席球探周远需要一套有限球探与知识度报告。',
   };
 }
 
-export function buildCompletionResult(state: TacticsState): { evidence: Evidence; summary: string[]; clubUpdate: ClubUpdate } {
+/** 正常模式完成时提交给俱乐部的真实增量；展示模式不写正式进度。 */
+export function buildClubPatch(state: TacticsState): ClubPatch | null {
+  if (state.mode !== 'normal') return null;
+  return {
+    tactics: {
+      possessionShape: state.config.possessionShape,
+      outOfPossessionShape: state.config.outOfPossessionShape,
+      fullbackDuty: state.config.fullbackDuty,
+      pivotDuty: state.config.pivotDuty,
+    },
+    transferBudget: remainingBudget(state),
+    addFailures: state.failureCount,
+  };
+}
+
+export function buildCompletionResult(state: TacticsState): {
+  evidence: Evidence;
+  summary: string[];
+  clubUpdate: ClubUpdate;
+  clubPatch?: ClubPatch;
+} {
+  const clubPatch = buildClubPatch(state);
   return {
     evidence: { ...state.evidence },
     summary: buildArchiveSummary(state),
     clubUpdate: buildClubUpdate(state),
+    ...(clubPatch ? { clubPatch } : {}),
   };
 }
 
@@ -1269,7 +1332,7 @@ function createBaseState(options: TacticsInitOptions, seed: number, phase: Level
   const fastPlay = options.mode === 'showcase' && options.showcaseOptions?.fastPlay === true;
   const normalizedSeed = normalizeSeed(seed);
   return {
-    version: 2,
+    version: 3,
     phase,
     mode: options.mode,
     fastPlay,
@@ -1277,6 +1340,8 @@ function createBaseState(options: TacticsInitOptions, seed: number, phase: Level
     rng: createRng(normalizedSeed),
     config: { ...DEFAULT_TACTICS_CONFIG },
     loadout: { shape: null, attack: null },
+    budget: normalizeBudget(options.startingBudget),
+    failureCount: 0,
     fault: { played: [], done: false, demoPreloaded: false },
     diagnose: { resolved: false },
     verify: { results: [], done: false, attempts: 0 },
@@ -1413,12 +1478,12 @@ function isEvidenceShape(value: unknown): value is Evidence {
 }
 
 /**
- * 校验并恢复存档（只接受 v2 结构；旧版存档安全回退）。
+ * 校验并恢复存档（只接受 v3 结构；旧版存档安全回退）。
  * 存档里的 mode / fastPlay 必须与当前上下文一致。
  */
 export function reviveTacticsState(raw: unknown, options: TacticsInitOptions): TacticsState | null {
   if (!isObject(raw)) return null;
-  if (raw.version !== 2) return null;
+  if (raw.version !== 3) return null;
   if (!isPhase(raw.phase)) return null;
   const mode = raw.mode;
   if (mode !== 'normal' && mode !== 'showcase') return null;
@@ -1429,6 +1494,8 @@ export function reviveTacticsState(raw: unknown, options: TacticsInitOptions): T
   if (!isFiniteNumber(raw.seed) || !isRngState(raw.rng)) return null;
   if (!isConfig(raw.config)) return null;
   if (!isLoadout(raw.loadout)) return null;
+  if (!isFiniteNumber(raw.budget) || raw.budget < 0) return null;
+  if (!isFiniteNumber(raw.failureCount) || raw.failureCount < 0) return null;
   const fault = raw.fault;
   if (!isObject(fault) || !Array.isArray(fault.played) || !fault.played.every(isFaultStageResult)) return null;
   if (!isBoolean(fault.done) || !isBoolean(fault.demoPreloaded)) return null;
@@ -1453,7 +1520,7 @@ export function reviveTacticsState(raw: unknown, options: TacticsInitOptions): T
   if (raw.phase === 'summary' && raw.mode === 'normal' && !transfer.resolved) return null;
 
   return {
-    version: 2,
+    version: 3,
     phase: raw.phase,
     mode,
     fastPlay: raw.fastPlay,
@@ -1461,6 +1528,8 @@ export function reviveTacticsState(raw: unknown, options: TacticsInitOptions): T
     rng: reviveRng(raw.rng),
     config: { ...(raw.config as TacticsConfig) },
     loadout: { shape: (raw.loadout as TacticsLoadout).shape, attack: (raw.loadout as TacticsLoadout).attack },
+    budget: normalizeBudget(raw.budget),
+    failureCount: Math.floor(raw.failureCount),
     fault: {
       played: [...(fault.played as FaultStageResult[])],
       done: fault.done,

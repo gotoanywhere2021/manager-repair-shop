@@ -183,7 +183,7 @@ export function HomeScreen() {
           </button>
           。
         </p>
-        <p>《经理修理铺》v3.0 · 非官方足球经理题材 · 进度保存在本机浏览器。</p>
+        <p>《经理修理铺》v4.0 · 非官方足球经理题材 · 进度保存在本机浏览器。</p>
       </footer>
     </div>
   );
@@ -268,10 +268,14 @@ function ClubOffice({ summary }: { summary: LevelProgressSummary }) {
           </h2>
           <p className="club-office-meta">
             第 {week} 周 · 已完成 {summary.completedCount} / {LEVELS.length} 份系统维修
+            {club.failures > 0 ? ` · 返工 ${club.failures} 次` : ''}
           </p>
         </div>
         <div className="club-office-side">
           <Chip tone="purple">董事会委托：修好四个系统</Chip>
+          <span className="club-office-resources">
+            转会预算 €{club.transferBudget}M · 周薪空间 €{club.wageBudget}k · 已签 {club.signings.length} 人
+          </span>
           {latest && <span className="club-office-time">最近更新 {formatClubTime(latest.at)}</span>}
         </div>
       </header>
@@ -341,6 +345,30 @@ function ClubOffice({ summary }: { summary: LevelProgressSummary }) {
           );
         })}
       </ol>
+
+      {(club.tactics || club.signings.length > 0 || club.scoutedCandidates.length > 0) && (
+        <div className="club-assets" aria-label="跨关资源">
+          {club.tactics && (
+            <p>
+              <span className="club-assets-label">战术板产出</span>
+              有球 {club.tactics.possessionShape} · 无球 {outOfPossessionLabel(club.tactics.outOfPossessionShape)} · 边后卫{' '}
+              {dutyLabel(club.tactics.fullbackDuty)} · 后腰 {dutyLabel(club.tactics.pivotDuty)}
+            </p>
+          )}
+          {club.scoutedCandidates.length > 0 && (
+            <p>
+              <span className="club-assets-label">球探报告</span>
+              {club.scoutedCandidates.map((candidate) => `${candidate.name}（${candidate.position}，知识度 ${candidate.knowledge}%）`).join(' · ')}
+            </p>
+          )}
+          {club.signings.length > 0 && (
+            <p>
+              <span className="club-assets-label">已签约</span>
+              {club.signings.map((signing) => `${signing.name}（${signing.position}）`).join(' · ')}
+            </p>
+          )}
+        </div>
+      )}
     </section>
   );
 }
@@ -349,5 +377,26 @@ function formatClubTime(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '刚刚';
   return date.toLocaleString('zh-CN', { hour12: false });
+}
+
+const OUT_SHAPE_LABELS: Record<string, string> = {
+  '4-4-2-mid': '4-4-2 中位块',
+  '4-1-4-1': '4-1-4-1',
+  '5-3-2-low': '5-3-2 低位块',
+};
+
+function outOfPossessionLabel(value: string): string {
+  return OUT_SHAPE_LABELS[value] ?? value;
+}
+
+const DUTY_LABELS: Record<string, string> = {
+  overlap: '套边',
+  invert: '内收',
+  single: '单后腰',
+  double: '双后腰',
+};
+
+function dutyLabel(value: string): string {
+  return DUTY_LABELS[value] ?? value;
 }
 

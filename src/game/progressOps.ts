@@ -65,20 +65,30 @@ export function applyLevelCompletion(
   const mechanism = getLevel(levelId).mechanismId;
   const levelStates = { ...progress.levelStates };
   delete levelStates[levelId];
-  const club = result.clubUpdate
-    ? {
-        ...progress.club,
-        timeline: [
-          ...progress.club.timeline,
-          {
-            levelId,
-            headline: result.clubUpdate.headline,
-            details: result.clubUpdate.details,
-            at: nowIso,
-          },
-        ].slice(-8),
-      }
-    : progress.club;
+  const patch = result.clubPatch ?? {};
+  const timeline = result.clubUpdate
+    ? [
+        ...progress.club.timeline,
+        {
+          levelId,
+          headline: result.clubUpdate.headline,
+          details: result.clubUpdate.details,
+          at: nowIso,
+        },
+      ].slice(-8)
+    : progress.club.timeline;
+  const club = {
+    ...progress.club,
+    week: Math.min(99, progress.club.week + 1),
+    failures: progress.club.failures + (patch.addFailures ?? 0),
+    tactics: patch.tactics ?? progress.club.tactics,
+    scoutedCandidates: patch.scoutedCandidates ?? progress.club.scoutedCandidates,
+    signings: patch.signings ?? progress.club.signings,
+    transferBudget: Math.max(0, patch.transferBudget ?? progress.club.transferBudget),
+    wageBudget: Math.max(0, patch.wageBudget ?? progress.club.wageBudget),
+    seasonReport: patch.seasonReport ?? progress.club.seasonReport,
+    timeline,
+  };
   const nextProgress: Progress = {
     ...progress,
     completedLevels: [...progress.completedLevels, levelId],

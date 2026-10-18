@@ -20,6 +20,7 @@ import {
   abilityLines,
   archiveBlockReason,
   assignScout,
+  budgetAfterRetries,
   buildArchiveSummary,
   buildCandidateReports,
   buildClubUpdate,
@@ -35,6 +36,7 @@ import {
   evaluateScoutingVerification,
   findCandidate,
   finishFaultPlay,
+  formatBudgetM,
   inspectCandidate,
   isSelectingCandidate,
   isVerificationDone,
@@ -48,11 +50,14 @@ import {
   precisionDescription,
   precisionLabel,
   regionName,
+  remainingBudget,
   reportPrecision,
   resolveDiagnose,
   resolveTransfer,
   retryVerification,
+  RETRY_COST_MILLIONS,
   reviveScoutingState,
+  SCOUT_NETWORK_FEE_MILLIONS,
   scoutsAvailable,
   selectCandidate,
   skipTransferInShowcase,
@@ -185,11 +190,11 @@ function ClubUpdateBox({ update }: { update: ClubUpdate }) {
   );
 }
 
-export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedState, onSaveState, onComplete, onExit }: LevelScreenProps) {
+export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, club, savedState, onSaveState, onComplete, onExit }: LevelScreenProps) {
   const [initialSeed] = useState<number>(() => showcaseOptions?.seed ?? randomSeed());
   const initOptions = useMemo<ScoutingInitOptions>(
-    () => ({ mode, fastStart, showcaseOptions }),
-    [mode, fastStart, showcaseOptions],
+    () => ({ mode, fastStart, showcaseOptions, startingBudget: mode === 'normal' ? club?.transferBudget : undefined }),
+    [mode, fastStart, showcaseOptions, club?.transferBudget],
   );
   const [state, setState] = useState<ScoutingState>(
     () => reviveScoutingState(savedState, initOptions) ?? createInitialScoutingState(initOptions, initialSeed),
@@ -239,6 +244,9 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
     ? reports.get(selectedCandidate.id) ?? candidateReport(selectedCandidate, state.knowledge[selectedCandidate.region])
     : null;
   const covered = REGIONS.filter((region) => state.knowledge[region.id] > 0);
+  const budgetNow = budgetAfterRetries(state);
+  const finalBudget = remainingBudget(state);
+  const budgetAfterRetry = Math.max(0, Math.round((budgetNow - RETRY_COST_MILLIONS) * 10) / 10);
 
   const commissionPanel = (
     <Panel title="接单：考察变成一个没有成本的按钮" subtitle={`${level.clientName} · ${level.clientRole}`} tone="purple">
@@ -355,7 +363,7 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
   );
 
   const repairPanel = (
-    <Panel title="维修台：4 个模块自由配置" subtitle="两个槽位各二选一；也可以什么都不装、装错模块直接派遣" tone="purple">
+    <Panel title="维修台：4 个模块自由配置" subtitle="两个槽位各二选一；可以先自由组合，再由派遣结果检验" tone="purple">
       {mode === 'showcase' && state.fault.done && !state.evidence.experiencedFault && (
         <Callout tone="amber" title="演示从这里开始">
           故障试玩记录取自规则基线，玩家没有亲自点过考察，因此不会计入「体验故障」证据。
@@ -371,7 +379,7 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
                 return (
                   <ModuleCard
                     key={module.id}
-                    name={`${module.name}${module.correct ? '' : ' · 错误模块'}`}
+                    name={module.name}
                     englishName={module.englishName}
                     summary={module.description}
                     sideEffect={module.sideEffect}
@@ -394,6 +402,14 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
         <Chip tone="amber">每区域每轮最多 1 人</Chip>
         <Chip tone={knowledgeGain > 0 ? 'green' : 'red'}>每次考察 +{knowledgeGain} 知识度</Chip>
         <Chip tone="neutral">{state.rounds} 轮派遣</Chip>
+      </div>
+      <div className="scouting-budget-strip" role="note">
+        <Chip tone="amber">俱乐部转会预算 €{formatBudgetM(budgetNow)}M</Chip>
+        <Chip tone={state.failureCount > 0 ? 'red' : 'neutral'}>本关返工 {state.failureCount} 次</Chip>
+        <span className="scouting-hint">
+          验证未达成后每次由俱乐部承担 €{formatBudgetM(RETRY_COST_MILLIONS)}M 考察成本；完成时另扣 €
+          {formatBudgetM(SCOUT_NETWORK_FEE_MILLIONS)}M 球探网络维护费（最低 0）。
+        </span>
       </div>
       <Callout tone="amber" title="验证目标">
         至少 {SCOUTING_TARGETS.coverageMin} 个区域知识度 ≥ {SCOUTING_TARGETS.knowledgeThreshold}，且选中候选的报告精度至少「
@@ -433,6 +449,11 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
             {remainingScouts > 0 ? `剩余 ${remainingScouts} 名球探` : '本轮球探已用完'}
           </span>
         </div>
+      </div>
+      <div className="scouting-budget-strip" role="note">
+        <Chip tone="amber">俱乐部转会预算 €{formatBudgetM(budgetNow)}M</Chip>
+        <Chip tone={state.failureCount > 0 ? 'red' : 'neutral'}>本关返工 {state.failureCount} 次</Chip>
+        <span className="scouting-hint">完成时另扣 €{formatBudgetM(SCOUT_NETWORK_FEE_MILLIONS)}M 球探网络维护费。</span>
       </div>
       {mode === 'showcase' && !state.evidence.experiencedFault && (
         <Callout tone="amber" title="演示从验证开始">
@@ -552,7 +573,10 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
             <>
               <Callout tone="red" title="验证未达成" icon="⚠">
                 未达成：{verification.failed.map((target) => `${target.label}（${target.actual}，要求 ${target.requirement}）`).join('；')}。
-                点击下面的按钮清空本轮派遣与选择，保留故障证据，回到维修台重新配置模块。
+                本次返工俱乐部承担 €{formatBudgetM(RETRY_COST_MILLIONS)}M 返工成本（考察费用），转会预算将受影响：€{formatBudgetM(
+                  budgetNow,
+                )}M → €{formatBudgetM(budgetAfterRetry)}M（完成时另扣 €{formatBudgetM(SCOUT_NETWORK_FEE_MILLIONS)}M 维护费）。
+                点击下面的按钮清空本轮派遣与选择，保留故障证据，回到维修台重新配置。
               </Callout>
               <div className="scouting-actions">
                 <Button onClick={() => apply(retryVerification)}>回到维修台重新配置</Button>
@@ -651,6 +675,10 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
           当时报告：{selectedReport.summary}。真实能力：{abilityLines(selectedCandidate)}。不要求选中「最强」球员。
         </Callout>
       )}
+      <Callout tone="amber" title="俱乐部成本">
+        本关返工 {state.failureCount} 次，俱乐部承担 €{formatBudgetM(state.failureCount * RETRY_COST_MILLIONS)}M 考察成本，加上 €
+        {formatBudgetM(SCOUT_NETWORK_FEE_MILLIONS)}M 球探网络维护费；剩余转会预算 €{formatBudgetM(finalBudget)}M（最低 0，不会为负）。
+      </Callout>
       <RuleList
         items={[
           { label: '知识度增长', value: `每次考察 +${knowledgeGain}（上限 ${KNOWLEDGE_MAX}）` },
@@ -712,12 +740,22 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
               <li key={module.id} className={installed ? 'is-installed' : ''}>
                 <span aria-hidden="true">{installed ? '●' : '○'}</span>
                 <span>{module.name}</span>
-                <span className="scouting-module-tag">{module.correct ? '推荐' : '有副作用'}</span>
               </li>
             );
           })}
         </ul>
         {state.attempts > 0 && <p className="scouting-hint">已重新派遣 {state.attempts} 次。</p>}
+      </Panel>
+      <Panel title="俱乐部预算" subtitle="失败返工会真实扣款，最低 0。">
+        <RuleList
+          items={[
+            { label: '当前可用预算', value: `€${formatBudgetM(budgetNow)}M`, tone: state.failureCount > 0 ? 'amber' : 'neutral' },
+            { label: '本关返工次数', value: `${state.failureCount} 次`, tone: state.failureCount > 0 ? 'red' : 'neutral' },
+            { label: '单次考察成本', value: `€${formatBudgetM(RETRY_COST_MILLIONS)}M` },
+            { label: '完成时维护费', value: `€${formatBudgetM(SCOUT_NETWORK_FEE_MILLIONS)}M` },
+            { label: '完成后剩余', value: `€${formatBudgetM(finalBudget)}M` },
+          ]}
+        />
       </Panel>
       <Panel title="报告精度阈值" subtitle="信息不是免费的，报告也不是一次给全。">
         <RuleList

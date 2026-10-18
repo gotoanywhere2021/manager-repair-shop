@@ -16,6 +16,10 @@ import type { RngState } from '../../engine/rng';
 import { recordEvent } from '../../engine/events';
 import { createEvidence } from '../../engine/types';
 import type {
+  ClubPatch,
+  ClubSeasonReport,
+  ClubSigning,
+  ClubState,
   ClubUpdate,
   EventLogEntry,
   EventState,
@@ -30,8 +34,8 @@ import type {
    注册规则与转会常量：界面与测试共用同一份来源。
    ========================================================================== */
 
-/** 存档结构版本；v2 增加了两个错误模块、缩减资源与尝试次数。 */
-export const SQUAD_STATE_VERSION = 2;
+/** 存档结构版本；v4 增加跨关俱乐部预算、已签约球员与返工成本。 */
+export const SQUAD_STATE_VERSION = 3;
 
 /** 名单人数上限。 */
 export const SQUAD_LIMIT = 25;
@@ -39,18 +43,20 @@ export const SQUAD_LIMIT = 25;
 export const YOUTH_MIN = 8;
 /** 各位置最低覆盖人数。 */
 export const POSITION_MIN = { GK: 2, DF: 6, MF: 6, FW: 4 } as const;
-/** 周薪空间，单位千欧/周。 */
+/** 默认周薪空间，单位千欧/周（club 未定义时使用）。 */
 export const WAGE_SPACE = 320;
 /** 现有 21 人阵容的基础周薪，单位千欧/周。 */
 export const BASE_WAGE = 240;
-/** 转会预算，单位万欧（4200 万欧 = €42M）。 */
+/** 默认转会预算，单位万欧（4200 万欧 = €42M；club 未定义时使用）。 */
 export const TRANSFER_BUDGET = 4200;
-/** 「全权交给经纪人」错误模块：预算与工资上限各扣 10%。 */
+/** 每次返工由俱乐部承担的紧急处理成本：100 万欧 = €1M。 */
+export const REWORK_COST = 100;
+/** 「全权交给经纪人」模块：预算与工资上限各扣 10%。 */
 export const AGENT_BUDGET_RATIO = 0.9;
 export const AGENT_WAGE_RATIO = 0.9;
-/** 现有阵容固定为 21 人，签下 4 人正好 25 人。 */
+/** 现有阵容固定为 21 人，签下 4 人正好 25 人（无跨关引援时）。 */
 export const BASE_SQUAD_TOTAL = 21;
-/** 正常模式需要签下 4 人。 */
+/** 无跨关引援时需要签下 4 人。 */
 export const REQUIRED_SIGNINGS = 4;
 /** 展示短局需要签下 2 人。 */
 export const REQUIRED_SIGNINGS_FAST = 2;
@@ -86,6 +92,28 @@ export const POSITION_LABELS: Record<SquadPosition, string> = {
 };
 
 export const POSITIONS: SquadPosition[] = ['GK', 'DF', 'MF', 'FW'];
+
+/**
+ * 把其他关卡提交的位置字符串映射到本关位置。
+ * 既接受 GK/DF/MF/FW，也接受转会窗使用的中文位置（门将 / 中卫 / 边锋 等）。
+ */
+export function mapClubPosition(position: string): SquadPosition {
+  const raw = position.trim();
+  if ((POSITIONS as string[]).includes(raw)) return raw as SquadPosition;
+  if (/门将|守门/.test(raw)) return 'GK';
+  if (/后卫|中卫|边卫|DF/i.test(raw)) return 'DF';
+  if (/中场|后腰|前腰|边前卫|MF/i.test(raw)) return 'MF';
+  if (/前锋|边锋|中锋|前场|FW/i.test(raw)) return 'FW';
+  return 'MF';
+}
+
+/** 把俱乐部已签约球员转成本关的注册名单成员。 */
+export function inheritedRosterPlayers(state: SquadState): { signing: ClubSigning; position: SquadPosition }[] {
+  return state.inheritedSignings.map((signing) => ({
+    signing,
+    position: mapClubPosition(signing.position),
+  }));
+}
 
 export interface BaseSquadPlayer {
   id: string;
@@ -194,6 +222,39 @@ export const MATCH_DECISIONS: TacticPreset[] = [
   { id: 'switch-block', name: '回到中位块，换下边锋', description: '收紧中路，接受控球减少。' },
   { id: 'park-bus', name: '五后卫死守', description: '把比分守住，但要承受连续进攻。' },
 ];
+
+/** 把上一关战术板的形态 id 映射到本关的形态预设；没有对应时返回 null。 */
+export function mapPossessionPreset(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const direct = POSSESSION_PRESETS.find((preset) => preset.id === value);
+  if (direct) return direct.id;
+  const table: Record<string, string> = {
+    '4-3-3': '433-attack',
+    '4-2-3-1': '4231-balance',
+    '3-2-5': '352-control',
+  };
+  return table[value] ?? null;
+}
+
+/** 把上一关战术板的形态 id 映射到本关的无球形态预设；没有对应时返回 null。 */
+export function mapOutPreset(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const direct = OUT_PRESETS.find((preset) => preset.id === value);
+  if (direct) return direct.id;
+  const table: Record<string, string> = {
+    '4-4-2-mid': '442-block',
+    '5-3-2-low': '532-low',
+    '4-1-4-1': '433-press',
+  };
+  return table[value] ?? null;
+}
+
+function tacticsPresetFromClub(club: ClubState | undefined): { possessionId: string | null; outId: string | null } {
+  return {
+    possessionId: mapPossessionPreset(club?.tactics?.possessionShape),
+    outId: mapOutPreset(club?.tactics?.outOfPossessionShape),
+  };
+}
 
 export interface MicroList {
   id: 'a' | 'b';
@@ -415,6 +476,8 @@ export interface SquadState {
   eventLog: EventLogEntry[];
   evidence: Evidence;
   modules: SquadModules;
+  /** 上一关（转会窗）已经签下、直接进入本次名单的球员。 */
+  inheritedSignings: ClubSigning[];
   candidates: SquadCandidate[];
   microChecks: { a: boolean; b: boolean };
   microTaught: boolean;
@@ -424,6 +487,8 @@ export interface SquadState {
   signings: string[];
   round: number;
   tactics: TacticsState;
+  /** 从上一关战术板带入的默认形态；重新开始名单流程时恢复到这套默认。 */
+  tacticsPreset: { possessionId: string | null; outId: string | null };
   registration: RegistrationResult | null;
   counterfactualCorrect: boolean;
   counterfactualAnswered: boolean;
@@ -431,6 +496,14 @@ export interface SquadState {
   reflectionConfirmed: boolean;
   skippedReflection: boolean;
   restarts: number;
+  /** 本关开始时可用的俱乐部转会预算，单位万欧。 */
+  startTransferBudget: number;
+  /** 本关开始时可用的俱乐部周薪空间，单位千欧/周。 */
+  startWageRoom: number;
+  /** 是否连接了正常模式的跨关俱乐部状态。 */
+  clubConnected: boolean;
+  /** 进入本关时俱乐部历史上的返工次数（仅展示）。 */
+  clubFailures: number;
 }
 
 export interface SquadActionResult {
@@ -445,14 +518,18 @@ export interface CreateSquadOptions {
   seed: number;
   fastStart: boolean;
   showcaseOptions: ShowcaseOptions | null;
+  /** 正常模式下的跨关俱乐部状态；展示模式为 undefined。 */
+  club?: ClubState;
 }
 
 /* ==========================================================================
    基础派生
    ========================================================================== */
 
+/** 无跨关引援时正常 4 人 / 短局 2 人；已从转会窗签下的人会直接占掉名单名额。 */
 export function requiredSignings(state: SquadState): number {
-  return state.fastPlay ? REQUIRED_SIGNINGS_FAST : REQUIRED_SIGNINGS;
+  const base = state.fastPlay ? REQUIRED_SIGNINGS_FAST : REQUIRED_SIGNINGS;
+  return Math.max(0, base - state.inheritedSignings.length);
 }
 
 /** 把万欧格式化成 €12M / €9.5M。 */
@@ -470,8 +547,15 @@ export function emptyScouts(): ScoutsState {
   return { assignments: { east: 0, plateau: 0, port: 0 }, confirmed: false };
 }
 
-export function emptyTactics(): TacticsState {
-  return { possessionId: null, outId: null, decisionId: null, confirmed: false, matchReport: null };
+/** 空战术状态；可带入上一关战术板的默认形态（不自动确认，比赛决策仍需自己选）。 */
+export function emptyTactics(prefill?: { possessionId: string | null; outId: string | null }): TacticsState {
+  return {
+    possessionId: prefill?.possessionId ?? null,
+    outId: prefill?.outId ?? null,
+    decisionId: null,
+    confirmed: false,
+    matchReport: null,
+  };
 }
 
 export function candidateById(state: SquadState, id: string): SquadCandidate | undefined {
@@ -488,16 +572,34 @@ export function feeUsed(state: SquadState): number {
   return signedCandidates(state).reduce((total, candidate) => total + candidate.transferFee, 0);
 }
 
-/** 当前模块下实际生效的转会预算上限；「全权交给经纪人」会砍 10%。 */
-export function budgetCap(state: SquadState): number {
-  return state.modules.agent
-    ? Math.floor(TRANSFER_BUDGET * AGENT_BUDGET_RATIO)
-    : TRANSFER_BUDGET;
+/** 本关已经发生的返工次数（每次「回到维修台重新配置」+1）。 */
+export function reworkCount(state: SquadState): number {
+  return Math.max(0, state.restarts);
 }
 
-/** 当前模块下实际生效的周薪空间上限；「全权交给经纪人」会砍 10%。 */
+/** 俱乐部因返工累计承担的紧急处理成本，单位万欧。 */
+export function reworkCostPaid(state: SquadState): number {
+  return reworkCount(state) * REWORK_COST;
+}
+
+/** 扣除返工成本后的转会预算基数（未应用经纪人模块）。 */
+export function budgetBase(state: SquadState): number {
+  return Math.max(0, state.startTransferBudget - reworkCostPaid(state));
+}
+
+/** 当前模块下实际生效的转会预算上限；「全权交给经纪人」会再砍 10%。 */
+export function budgetCap(state: SquadState): number {
+  return state.modules.agent ? Math.floor(budgetBase(state) * AGENT_BUDGET_RATIO) : budgetBase(state);
+}
+
+/** 不受经纪人模块影响的工资基数：俱乐部模式 = 现有周薪 + 俱乐部剩余空间。 */
+export function wageBase(state: SquadState): number {
+  return state.clubConnected ? BASE_WAGE + state.startWageRoom : WAGE_SPACE;
+}
+
+/** 当前模块下实际生效的周薪空间上限；「全权交给经纪人」会再砍 10%。 */
 export function wageCap(state: SquadState): number {
-  return state.modules.agent ? Math.floor(WAGE_SPACE * AGENT_WAGE_RATIO) : WAGE_SPACE;
+  return state.modules.agent ? Math.floor(wageBase(state) * AGENT_WAGE_RATIO) : wageBase(state);
 }
 
 export function remainingBudget(state: SquadState): number {
@@ -513,7 +615,8 @@ export function remainingWage(state: SquadState): number {
 }
 
 export function youthCount(state: SquadState): number {
-  return BASE_SQUAD_YOUTH + signedCandidates(state).filter((candidate) => candidate.youth).length;
+  const inheritedYouth = inheritedRosterPlayers(state).filter((entry) => entry.signing.homegrown).length;
+  return BASE_SQUAD_YOUTH + inheritedYouth + signedCandidates(state).filter((candidate) => candidate.youth).length;
 }
 
 export function squadCounts(state: SquadState): Record<SquadPosition, number> {
@@ -523,6 +626,9 @@ export function squadCounts(state: SquadState): Record<SquadPosition, number> {
     MF: BASE_SQUAD_COUNTS.MF,
     FW: BASE_SQUAD_COUNTS.FW,
   };
+  inheritedRosterPlayers(state).forEach((entry) => {
+    counts[entry.position] += 1;
+  });
   signedCandidates(state).forEach((candidate) => {
     counts[candidate.position] += 1;
   });
@@ -530,7 +636,7 @@ export function squadCounts(state: SquadState): Record<SquadPosition, number> {
 }
 
 export function squadTotal(state: SquadState): number {
-  return BASE_SQUAD_TOTAL + state.signings.length;
+  return BASE_SQUAD_TOTAL + state.inheritedSignings.length + state.signings.length;
 }
 
 export interface RosterSlotPlayer {
@@ -538,6 +644,8 @@ export interface RosterSlotPlayer {
   name: string;
   youth: boolean;
   signed: boolean;
+  /** 是否来自上一关转会窗。 */
+  inherited: boolean;
 }
 
 export interface RosterGroup {
@@ -551,17 +659,27 @@ export interface RosterGroup {
   gapToMin: number;
 }
 
-/** 名单分组 / 槽位展示：现有阵容 + 新援按位置分组，缺口一眼可见。 */
+/** 名单分组 / 槽位展示：现有 21 人 + 转会窗引援 + 本关新援按位置分组，缺口一眼可见。 */
 export function rosterGroups(state: SquadState): RosterGroup[] {
   const signed = signedCandidates(state);
+  const inherited = inheritedRosterPlayers(state);
   return POSITIONS.map((position) => {
     const basePlayers: RosterSlotPlayer[] = BASE_SQUAD_PLAYERS.filter((player) => player.position === position).map(
-      (player) => ({ id: player.id, name: player.name, youth: player.youth, signed: false }),
+      (player) => ({ id: player.id, name: player.name, youth: player.youth, signed: false, inherited: false }),
     );
+    const inheritedPlayers: RosterSlotPlayer[] = inherited
+      .filter((entry) => entry.position === position)
+      .map((entry) => ({
+        id: entry.signing.id,
+        name: entry.signing.name,
+        youth: entry.signing.homegrown,
+        signed: true,
+        inherited: true,
+      }));
     const signedPlayersList: RosterSlotPlayer[] = signed
       .filter((candidate) => candidate.position === position)
-      .map((candidate) => ({ id: candidate.id, name: candidate.name, youth: candidate.youth, signed: true }));
-    const players = [...basePlayers, ...signedPlayersList];
+      .map((candidate) => ({ id: candidate.id, name: candidate.name, youth: candidate.youth, signed: true, inherited: false }));
+    const players = [...basePlayers, ...inheritedPlayers, ...signedPlayersList];
     return {
       position,
       label: POSITION_LABELS[position],
@@ -852,9 +970,43 @@ function createCandidates(rng: RngState): { candidates: SquadCandidate[]; rng: R
   return { candidates, rng: current };
 }
 
+/** 把上一关提交的签约转成本关的「已在转会窗签下」名单，避免与本关 21 人与候选重复。 */
+function buildInheritedSignings(club: ClubState | undefined): ClubSigning[] {
+  if (!club) return [];
+  const blockedIds = new Set<string>([
+    ...BASE_SQUAD_PLAYERS.map((player) => player.id),
+    ...CANDIDATE_SEEDS.map((candidate) => candidate.id),
+  ]);
+  const blockedNames = new Set<string>([
+    ...BASE_SQUAD_PLAYERS.map((player) => player.name),
+    ...CANDIDATE_SEEDS.map((candidate) => candidate.name),
+  ]);
+  const result: ClubSigning[] = [];
+  for (const signing of club.signings) {
+    if (!signing || typeof signing.name !== 'string' || !signing.name.trim()) continue;
+    if (blockedIds.has(signing.id) || blockedNames.has(signing.name)) continue;
+    blockedIds.add(signing.id);
+    blockedNames.add(signing.name);
+    result.push({
+      id: signing.id,
+      name: signing.name,
+      position: signing.position,
+      fee: Math.max(0, signing.fee),
+      wage: Math.max(0, signing.wage),
+      homegrown: signing.homegrown === true,
+    });
+  }
+  return result.slice(0, 6);
+}
+
 export function createSquadState(options: CreateSquadOptions): SquadState {
   const rolled = createCandidates(createRng(options.seed));
   const showcase = options.showcaseOptions;
+  const club = options.club;
+  const inheritedSignings = buildInheritedSignings(club);
+  const tacticsPreset = tacticsPresetFromClub(club);
+  const startTransferBudget = club ? Math.max(0, Math.round(club.transferBudget * 100)) : TRANSFER_BUDGET;
+  const startWageRoom = club ? Math.max(0, club.wageBudget) : WAGE_SPACE;
   let phase: LevelPhase = options.fastStart ? 'faultPlay' : 'commission';
   let modules: SquadModules = {
     tactics: false,
@@ -913,6 +1065,7 @@ export function createSquadState(options: CreateSquadOptions): SquadState {
     eventLog: [],
     evidence: createEvidence(),
     modules,
+    inheritedSignings,
     candidates: rolled.candidates,
     microChecks,
     microTaught,
@@ -921,7 +1074,8 @@ export function createSquadState(options: CreateSquadOptions): SquadState {
     scouts: emptyScouts(),
     signings: [],
     round: 1,
-    tactics: emptyTactics(),
+    tactics: emptyTactics(tacticsPreset),
+    tacticsPreset,
     registration: null,
     counterfactualCorrect: false,
     counterfactualAnswered: false,
@@ -929,6 +1083,10 @@ export function createSquadState(options: CreateSquadOptions): SquadState {
     reflectionConfirmed: false,
     skippedReflection: false,
     restarts: 0,
+    startTransferBudget,
+    startWageRoom,
+    clubConnected: Boolean(club),
+    clubFailures: club ? Math.max(0, club.failures) : 0,
   };
 }
 
@@ -1058,7 +1216,7 @@ export function startFlow(state: SquadState): SquadActionResult {
       scouts: emptyScouts(),
       signings: [],
       round: 1,
-      tactics: emptyTactics(),
+      tactics: emptyTactics(state.tacticsPreset),
       registration: null,
       counterfactualCorrect: false,
       counterfactualAnswered: false,
@@ -1244,7 +1402,9 @@ export function signCandidate(state: SquadState, candidateId: string): SquadActi
 
 export function finishSigning(state: SquadState): SquadActionResult {
   if (state.phase !== 'verify' || state.step !== 'transfer') return { state, ok: false, reason: '现在不在转会阶段。' };
-  if (state.signings.length === 0) return { state, ok: false, reason: '至少先签下 1 人，再进入战术阶段。' };
+  if (state.signings.length === 0 && requiredSignings(state) > 0) {
+    return { state, ok: false, reason: '至少先签下 1 人，再进入战术阶段。' };
+  }
   const next = log(
     { ...state, step: 'tactics' },
     {
@@ -1620,7 +1780,7 @@ export function restartRun(state: SquadState): SquadActionResult {
       scouts: emptyScouts(),
       signings: [],
       round: 1,
-      tactics: emptyTactics(),
+      tactics: emptyTactics(state.tacticsPreset),
       registration: null,
       counterfactualCorrect: false,
       counterfactualAnswered: false,
@@ -1635,9 +1795,12 @@ export function restartRun(state: SquadState): SquadActionResult {
       phase: 'repair',
       action: 'restart',
       label: `回到维修台重新配置：清空名单流程成绩（第 ${state.restarts + 1} 次）`,
-      before: { signings: state.signings.length, step: state.step },
-      after: { signings: 0, step: 'scout', phase: 'repair' },
-      note: '本轮验证成绩已清空；模块配置与注册微教学保留，可以调整模块后重新开始名单流程。',
+      before: { signings: state.signings.length, step: state.step, budget: budgetCap(state) },
+      after: { signings: 0, step: 'scout', phase: 'repair', budget: Math.max(0, budgetBase(state) - REWORK_COST) },
+      delta: `俱乐部承担 ${formatSquadFee(REWORK_COST)} 紧急处理成本`,
+      note: `每次注册/目标未达成后的重新配置都记一次返工：俱乐部承担 ${formatSquadFee(
+        REWORK_COST,
+      )} 紧急处理成本，从转会预算扣除（最低 0）。模块配置与注册微教学保留。`,
     },
   );
   return { state: next, ok: true };
@@ -1646,6 +1809,53 @@ export function restartRun(state: SquadState): SquadActionResult {
 /* ==========================================================================
    归档总结
    ========================================================================== */
+
+function newSigningsAsClubSignings(state: SquadState): ClubSigning[] {
+  return signedCandidates(state).map((candidate) => ({
+    id: candidate.id,
+    name: candidate.name,
+    position: POSITION_LABELS[candidate.position],
+    fee: Math.max(0, Math.round((candidate.transferFee / 100) * 10) / 10),
+    wage: candidate.wage,
+    homegrown: candidate.youth,
+  }));
+}
+
+function newWageSum(state: SquadState): number {
+  return signedCandidates(state).reduce((total, candidate) => total + candidate.wage, 0);
+}
+
+/** 真实注册结果 / 名单 / 青训 / 工资，写成赛季报告。 */
+export function buildSquadSeasonReport(state: SquadState): ClubSeasonReport {
+  const registration = state.registration ?? evaluateRegistration(state);
+  const coverage = rosterGroups(state)
+    .map((group) => `${group.label} ${group.count}/${group.min}`)
+    .join('、');
+  const registrationText = registration.skippedByIgnore
+    ? '被「无视注册规则」跳过'
+    : registration.enabled
+      ? registration.passed
+        ? '通过'
+        : '未通过'
+      : '注册规则未启用（退化放行）';
+  const inherited = state.inheritedSignings.map((signing) => `${signing.name}（${signing.position}）`);
+  const newSignings = signedCandidates(state).map(
+    (candidate) => `${candidate.name}（${POSITION_LABELS[candidate.position]}${candidate.youth ? ' · 青训' : ''}）`,
+  );
+  return {
+    headline: `注册完成：名单 ${registration.total}/${SQUAD_LIMIT} 人，青训 ${registration.youth}/${YOUTH_MIN}，周薪 €${registration.wage}k/€${registration.wageCap}k`,
+    details: [
+      `注册检查：${registrationText}；人数 ${registration.total}/${SQUAD_LIMIT}、青训 ${registration.youth}/${YOUTH_MIN}、周薪 €${registration.wage}k / €${registration.wageCap}k。`,
+      `位置覆盖：${coverage}。`,
+      `引援：转会窗已签 ${inherited.length > 0 ? inherited.join('、') : '无'}；注册日新签 ${
+        newSignings.length > 0 ? newSignings.join('、') : '无'
+      }。`,
+      `预算：返工 ${reworkCount(state)} 次、俱乐部承担 ${formatSquadFee(reworkCostPaid(state))} 成本；本关预算剩余 ${formatSquadFee(
+        Math.max(0, budgetBase(state) - feeUsed(state)),
+      )} / 起始 ${formatSquadFee(state.startTransferBudget)}。`,
+    ],
+  };
+}
 
 export function squadSummaryLines(state: SquadState): string[] {
   const goals = evaluateGoals(state);
@@ -1669,12 +1879,18 @@ export function squadSummaryLines(state: SquadState): string[] {
       : '在退化规则下直接通过';
   return [
     `规则组合：${moduleLine}，同时作用于同一份名单。`,
-    `真实操作：${state.signings.length} 次签约，名单 ${registration.total}/${SQUAD_LIMIT} 人、青训 ${registration.youth}/${YOUTH_MIN}、周薪 €${registration.wage}k/${registration.wageCap}k；注册检查${registrationText}。三项目标达成 ${goals.filter((goal) => goal.achieved).length} / 3。`,
-    `代价与组合：注册规则把「收集强球员」变成「拼一张能过关的名单」——人数、青训、位置与工资四个名额同时被占用，补一个缺口常常要放弃另一个更强的选择。`,
+    `真实操作：从转会窗带入 ${state.inheritedSignings.length} 人，本关签约 ${state.signings.length} 人，名单 ${
+      registration.total
+    }/${SQUAD_LIMIT} 人、青训 ${registration.youth}/${YOUTH_MIN}、周薪 €${registration.wage}k/${registration.wageCap}k；注册检查${registrationText}。三项目标达成 ${
+      goals.filter((goal) => goal.achieved).length
+    } / 3。`,
+    `代价与组合：注册规则把「收集强球员」变成「拼一张能过关的名单」；返工 ${reworkCount(state)} 次让俱乐部承担 ${formatSquadFee(
+      reworkCostPaid(state),
+    )} 紧急处理成本，跨关预算和薪资空间会一起变紧。`,
   ];
 }
 
-/** 俱乐部时间线：只写真实名单、注册检查、位置覆盖、工资与预算数据。 */
+/** 俱乐部时间线：只写真实名单、注册检查、位置覆盖、跨关引援、返工与预算数据。 */
 export function buildSquadClubUpdate(state: SquadState): ClubUpdate {
   const registration = state.registration ?? evaluateRegistration(state);
   const signed = signedCandidates(state);
@@ -1689,7 +1905,8 @@ export function buildSquadClubUpdate(state: SquadState): ClubUpdate {
         ? '通过'
         : '未通过'
       : '注册规则未启用（退化放行）';
-  const risky = [
+  const inheritedNames = state.inheritedSignings.map((signing) => `${signing.name}（${signing.position}）`);
+  const extraModules = [
     state.modules.ignoreRegistration ? '无视注册规则' : '',
     state.modules.agent ? '全权交给经纪人' : '',
   ].filter(Boolean);
@@ -1698,14 +1915,29 @@ export function buildSquadClubUpdate(state: SquadState): ClubUpdate {
     details: [
       `注册检查：${registrationText}；人数 ${registration.total}/${SQUAD_LIMIT}、青训 ${registration.youth}/${YOUTH_MIN}、周薪 €${registration.wage}k / €${registration.wageCap}k。`,
       `位置覆盖：${coverage}。`,
-      `转会：预算使用 ${formatSquadFee(feeUsed(state))} / ${formatSquadFee(registration.budgetCap)}；新援 ${signed.length} 人${
-        signed.length > 0 ? `（${signed.map((candidate) => candidate.name).join('、')}），其中本土青训 ${signedYouth} 人` : ''
-      }。`,
-      `模块：双形态战术${state.modules.tactics ? '已启用' : '未启用'}、球探网络${state.modules.scouting ? '已启用' : '未启用'}、转会谈判${state.modules.transfers ? '已启用' : '未启用'}、阵容注册${state.modules.registration ? '已启用' : '未启用'}${
-        risky.length > 0 ? `；另装了${risky.join('、')}` : ''
+      `跨关引援：转会窗已签 ${inheritedNames.length > 0 ? inheritedNames.join('、') : '无'}；本关新签 ${
+        signed.length > 0 ? `${signed.map((candidate) => candidate.name).join('、')}（青训 ${signedYouth} 人）` : '无'
+      }。预算：返工 ${reworkCount(state)} 次、成本 ${formatSquadFee(reworkCostPaid(state))}，剩余 ${formatSquadFee(
+        Math.max(0, budgetBase(state) - feeUsed(state)),
+      )} / 起始 ${formatSquadFee(state.startTransferBudget)}。`,
+      `模块：双形态战术${state.modules.tactics ? '已启用' : '未启用'}、球探网络${state.modules.scouting ? '已启用' : '未启用'}、转会谈判${
+        state.modules.transfers ? '已启用' : '未启用'
+      }、阵容注册${state.modules.registration ? '已启用' : '未启用'}${
+        extraModules.length > 0 ? `；另装了${extraModules.join('、')}` : ''
       }。`,
     ],
     nextBrief: '下一份委托：带着这份真实名单进入新赛季，观察战术、球探与注册规则在比赛里的连锁反应。',
+  };
+}
+
+/** 跨关俱乐部增量：最终名单签约（含转会窗引援）、绝对剩余预算、返工次数与赛季报告。 */
+export function buildSquadClubPatch(state: SquadState): ClubPatch {
+  return {
+    signings: [...state.inheritedSignings, ...newSigningsAsClubSignings(state)],
+    transferBudget: Math.max(0, Math.round(((budgetBase(state) - feeUsed(state)) / 100) * 10) / 10),
+    wageBudget: Math.max(0, Math.round((state.startWageRoom - newWageSum(state)) * 10) / 10),
+    addFailures: reworkCount(state),
+    seasonReport: buildSquadSeasonReport(state),
   };
 }
 
@@ -1836,6 +2068,37 @@ function reviveScouts(raw: unknown): ScoutsState | null {
   };
 }
 
+function reviveInheritedSignings(raw: unknown): ClubSigning[] | null {
+  if (!Array.isArray(raw)) return null;
+  const result: ClubSigning[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') return null;
+    const data = item as Record<string, unknown>;
+    if (typeof data.id !== 'string' || typeof data.name !== 'string' || typeof data.position !== 'string') return null;
+    if (!isFiniteNumber(data.fee) || !isFiniteNumber(data.wage) || typeof data.homegrown !== 'boolean') return null;
+    result.push({
+      id: data.id,
+      name: data.name,
+      position: data.position,
+      fee: Math.max(0, data.fee),
+      wage: Math.max(0, data.wage),
+      homegrown: data.homegrown,
+    });
+  }
+  return result;
+}
+
+function reviveTacticsPreset(raw: unknown): { possessionId: string | null; outId: string | null } | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const data = raw as Record<string, unknown>;
+  const optionalString = (value: unknown): boolean => value === null || typeof value === 'string';
+  if (!optionalString(data.possessionId) || !optionalString(data.outId)) return null;
+  return {
+    possessionId: data.possessionId as string | null,
+    outId: data.outId as string | null,
+  };
+}
+
 /** 只接受结构完整的存档；损坏存档返回 null，由组件从头开始。 */
 export function reviveSquadState(raw: unknown): SquadState | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -1848,6 +2111,10 @@ export function reviveSquadState(raw: unknown): SquadState | null {
   const rng = reviveRng(data.rng);
   const candidates = reviveCandidates(data.candidates);
   if (!candidates) return null;
+  const inheritedSignings = reviveInheritedSignings(data.inheritedSignings);
+  if (!inheritedSignings) return null;
+  const tacticsPreset = reviveTacticsPreset(data.tacticsPreset);
+  if (!tacticsPreset) return null;
   if (!Array.isArray(data.eventLog)) return null;
   const eventLog: EventLogEntry[] = [];
   for (const item of data.eventLog) {
@@ -1912,6 +2179,10 @@ export function reviveSquadState(raw: unknown): SquadState | null {
   if (signings.some((id) => !CANDIDATE_SEEDS.some((candidate) => candidate.id === id))) return null;
   if (!isFiniteNumber(data.round) || data.round < 1) return null;
   if (!isFiniteNumber(data.restarts) || data.restarts < 0) return null;
+  if (!isFiniteNumber(data.startTransferBudget) || data.startTransferBudget < 0) return null;
+  if (!isFiniteNumber(data.startWageRoom) || data.startWageRoom < 0) return null;
+  if (typeof data.clubConnected !== 'boolean') return null;
+  if (!isFiniteNumber(data.clubFailures) || data.clubFailures < 0) return null;
   if (!isFiniteNumber(data.seed)) return null;
   const scouts = reviveScouts(data.scouts);
   if (!scouts) return null;
@@ -1934,6 +2205,7 @@ export function reviveSquadState(raw: unknown): SquadState | null {
       transferred: evidence.transferred,
     },
     modules,
+    inheritedSignings,
     candidates,
     microChecks: { a: microChecksRaw.a, b: microChecksRaw.b },
     microTaught: data.microTaught as boolean,
@@ -1943,6 +2215,7 @@ export function reviveSquadState(raw: unknown): SquadState | null {
     signings,
     round: Math.floor(data.round),
     tactics,
+    tacticsPreset,
     registration,
     counterfactualCorrect: data.counterfactualCorrect as boolean,
     counterfactualAnswered: data.counterfactualAnswered as boolean,
@@ -1950,5 +2223,9 @@ export function reviveSquadState(raw: unknown): SquadState | null {
     reflectionConfirmed: data.reflectionConfirmed as boolean,
     skippedReflection: data.skippedReflection as boolean,
     restarts: data.restarts,
+    startTransferBudget: data.startTransferBudget,
+    startWageRoom: data.startWageRoom,
+    clubConnected: data.clubConnected,
+    clubFailures: Math.floor(data.clubFailures),
   };
 }

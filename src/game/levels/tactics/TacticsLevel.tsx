@@ -37,18 +37,20 @@ import {
   evaluateTacticsVerification,
   faultInstructionName,
   faultTotals,
+  formatBudgetM,
   formatMetricDelta,
-  installTacticsModule,
   loadoutModuleNames,
   metricsSummary,
   openDiagnose,
   openSummary,
   openTransfer,
   protectionRiskLabel,
+  remainingBudget,
   requiredStages,
   resolveDiagnose,
   resolveTransfer,
   retryVerification,
+  RETRY_COST_MILLIONS,
   reviveTacticsState,
   selectFullbackDuty,
   selectOutShape,
@@ -340,7 +342,6 @@ function ModuleStatus({ loadout }: { loadout: TacticsLoadout }) {
           <li key={module.id} className={installed ? 'is-installed' : ''}>
             <span aria-hidden="true">{installed ? '●' : '○'}</span>
             <span>{module.name}</span>
-            <span className="tactics-module-tag">{module.correct ? '推荐' : '有副作用'}</span>
           </li>
         );
       })}
@@ -362,11 +363,11 @@ function ClubUpdateBox({ update }: { update: ClubUpdate }) {
   );
 }
 
-export function TacticsLevel({ level, mode, fastStart, showcaseOptions, savedState, onSaveState, onComplete, onExit }: LevelScreenProps) {
+export function TacticsLevel({ level, mode, fastStart, showcaseOptions, club, savedState, onSaveState, onComplete, onExit }: LevelScreenProps) {
   const [initialSeed] = useState<number>(() => showcaseOptions?.seed ?? randomSeed());
   const initOptions = useMemo<TacticsInitOptions>(
-    () => ({ mode, fastStart, showcaseOptions }),
-    [mode, fastStart, showcaseOptions],
+    () => ({ mode, fastStart, showcaseOptions, startingBudget: mode === 'normal' ? club?.transferBudget : undefined }),
+    [mode, fastStart, showcaseOptions, club?.transferBudget],
   );
   const [state, setState] = useState<TacticsState>(
     () => reviveTacticsState(savedState, initOptions) ?? createInitialTacticsState(initOptions, initialSeed),
@@ -408,6 +409,8 @@ export function TacticsLevel({ level, mode, fastStart, showcaseOptions, savedSta
   const faultBase = state.fault.played.length > 0 ? faultTotals(state.fault.played) : faultTotals(baselineRef);
   const fixedTotals = verifyTotals(state.verify.results);
   const clubUpdate = buildClubUpdate(state);
+  const budgetNow = remainingBudget(state);
+  const budgetAfterRetry = Math.max(0, Math.round((budgetNow - RETRY_COST_MILLIONS) * 10) / 10);
   const dutyDisplay: DutyDisplay = {
     fullbackDuty: state.config.fullbackDuty,
     pivotDuty: state.config.pivotDuty,
@@ -520,7 +523,7 @@ export function TacticsLevel({ level, mode, fastStart, showcaseOptions, savedSta
   const repairPanel = (
     <Panel
       title="维修台：4 个模块自由配置"
-      subtitle="两个槽位各二选一；也可以什么都不装、装错模块直接验证"
+      subtitle="两个槽位各二选一；可以先自由组合，再由验证结果检验"
       tone="purple"
     >
       {state.fault.demoPreloaded && (
@@ -538,7 +541,7 @@ export function TacticsLevel({ level, mode, fastStart, showcaseOptions, savedSta
                 return (
                   <ModuleCard
                     key={module.id}
-                    name={`${module.name}${module.correct ? '' : ' · 错误模块'}`}
+                    name={module.name}
                     englishName={module.englishName}
                     summary={module.description}
                     sideEffect={module.sideEffect}
@@ -553,23 +556,15 @@ export function TacticsLevel({ level, mode, fastStart, showcaseOptions, savedSta
         ))}
       </div>
       <Callout tone="neutral" title="当前组合">
-        已安装：{loadoutNames.length > 0 ? loadoutNames.join('、') : '没有模块'}。错误模块会真实改写下面的指标与验证结果；不需要它时点一下就能卸载。
+        已安装：{loadoutNames.length > 0 ? loadoutNames.join('、') : '没有模块'}。不同组合会改写下面的指标与验证结果；点一下就能安装或卸载。
       </Callout>
-      {(state.loadout.shape !== 'dual-shape' || state.loadout.attack !== 'role-duties') && (
-        <div className="tactics-quick-install">
-          <p className="tactics-hint">推荐组合：双形态战术 + 职责分工。也可以不按推荐来，直接从上面的模块池里挑。</p>
-          {state.loadout.shape !== 'dual-shape' && (
-            <Button size="sm" variant="success" onClick={() => apply((current) => installTacticsModule(current, 'dual-shape'))}>
-              安装双形态战术
-            </Button>
-          )}
-          {state.loadout.attack !== 'role-duties' && (
-            <Button size="sm" variant="success" onClick={() => apply((current) => installTacticsModule(current, 'role-duties'))}>
-              安装职责分工
-            </Button>
-          )}
-        </div>
-      )}
+      <div className="tactics-budget-strip" role="note">
+        <Chip tone="amber">俱乐部转会预算 €{formatBudgetM(budgetNow)}M</Chip>
+        <Chip tone={state.failureCount > 0 ? 'red' : 'neutral'}>本关返工 {state.failureCount} 次</Chip>
+        <span className="tactics-hint">
+          验证未达成后回到维修台，每次由俱乐部承担 €{formatBudgetM(RETRY_COST_MILLIONS)}M 修复成本，转会预算会真实减少（最低 0）。
+        </span>
+      </div>
       <div className="tactics-pickers">
         <PresetPicker
           label="有球形态（控球时）"
@@ -620,7 +615,7 @@ export function TacticsLevel({ level, mode, fastStart, showcaseOptions, savedSta
       </div>
       <MetricsGrid metrics={metrics} />
       <Callout tone="amber" title="取舍与代价">
-        边路保护越高，通常推进与体能代价越大；人盯人和长传冲吊会让结果真实变差。验证目标：机会≥{stages * TACTICS_TARGETS.chancesPerStage}、失球≤
+        边路保护越高，通常推进与体能代价越大；不同模块组合都要在比赛里检验。验证目标：机会≥{stages * TACTICS_TARGETS.chancesPerStage}、失球≤
         {TACTICS_TARGETS.goalsAgainstMax}、边路丢球≤{TACTICS_TARGETS.wingGoalsAgainstMax}、体能≤{TACTICS_TARGETS.staminaMax}。
       </Callout>
       <div className="tactics-actions">
@@ -644,35 +639,40 @@ export function TacticsLevel({ level, mode, fastStart, showcaseOptions, savedSta
       tone={state.verify.done && !verification.passed ? 'amber' : 'green'}
     >
       <div className="tactics-config-chips">
-        <Chip tone="purple">
-          {state.loadout.shape === 'dual-shape'
-            ? `有球 ${state.config.possessionShape}`
-            : state.loadout.shape === 'man-marking'
-              ? '全场人盯人（错误模块）'
-              : '形态模块：未安装'}
-        </Chip>
-        <Chip tone="purple">
-          {state.loadout.shape === 'dual-shape'
-            ? `无球 ${OUT_SHAPE_LABELS[state.config.outOfPossessionShape] ?? state.config.outOfPossessionShape}`
-            : state.loadout.shape === 'man-marking'
-              ? '边路保护 −30'
-              : '只有一套 4-4-2'}
-        </Chip>
-        <Chip tone="green">
-          {state.loadout.attack === 'role-duties'
-            ? `边后卫${FULLBACK_DUTY_OPTIONS.find((item) => item.id === state.config.fullbackDuty)?.name ?? ''}`
-            : state.loadout.attack === 'long-ball'
-              ? '长传冲吊（错误模块）'
-              : '职责模块：未安装'}
-        </Chip>
-        <Chip tone="green">
-          {state.loadout.attack === 'role-duties'
-            ? `后腰${PIVOT_DUTY_OPTIONS.find((item) => item.id === state.config.pivotDuty)?.name ?? ''}`
-            : state.loadout.attack === 'long-ball'
-              ? '每阶段少 1 次机会'
-              : '没有职责分工'}
-        </Chip>
-      </div>
+            <Chip tone="purple">
+              {state.loadout.shape === 'dual-shape'
+                ? `有球 ${state.config.possessionShape}`
+                : state.loadout.shape === 'man-marking'
+                  ? '全场人盯人'
+                  : '形态模块：未安装'}
+            </Chip>
+            <Chip tone="purple">
+              {state.loadout.shape === 'dual-shape'
+                ? `无球 ${OUT_SHAPE_LABELS[state.config.outOfPossessionShape] ?? state.config.outOfPossessionShape}`
+                : state.loadout.shape === 'man-marking'
+                  ? '边路保护 −30'
+                  : '只有一套 4-4-2'}
+            </Chip>
+            <Chip tone="green">
+              {state.loadout.attack === 'role-duties'
+                ? `边后卫${FULLBACK_DUTY_OPTIONS.find((item) => item.id === state.config.fullbackDuty)?.name ?? ''}`
+                : state.loadout.attack === 'long-ball'
+                  ? '长传冲吊'
+                  : '职责模块：未安装'}
+            </Chip>
+            <Chip tone="green">
+              {state.loadout.attack === 'role-duties'
+                ? `后腰${PIVOT_DUTY_OPTIONS.find((item) => item.id === state.config.pivotDuty)?.name ?? ''}`
+                : state.loadout.attack === 'long-ball'
+                  ? '每阶段少 1 次机会'
+                  : '没有职责分工'}
+            </Chip>
+          </div>
+          <div className="tactics-budget-strip" role="note">
+            <Chip tone="amber">俱乐部转会预算 €{formatBudgetM(budgetNow)}M</Chip>
+            <Chip tone={state.failureCount > 0 ? 'red' : 'neutral'}>本关返工 {state.failureCount} 次</Chip>
+            <span className="tactics-hint">失败返工会由俱乐部承担 €{formatBudgetM(RETRY_COST_MILLIONS)}M 修复成本。</span>
+          </div>
       {state.fault.demoPreloaded && (
         <Callout tone="amber" title="演示从验证开始">
           故障记录取自同一套规则基线，玩家没有亲自试玩故障版，因此不会计入「体验故障」证据。
@@ -757,7 +757,9 @@ export function TacticsLevel({ level, mode, fastStart, showcaseOptions, savedSta
             <>
               <Callout tone="red" title="验证未达成" icon="⚠">
                 未达成：{verification.failed.map((target) => `${target.label}（${target.actual}，要求 ${target.requirement}）`).join('；')}。
-                点击下面的按钮清空本轮验证成绩，保留故障证据，回到维修台重新配置模块或阵型。
+                本次返工俱乐部承担 €{formatBudgetM(RETRY_COST_MILLIONS)}M 返工成本，转会预算将受影响：€{formatBudgetM(
+                  budgetNow,
+                )}M → €{formatBudgetM(budgetAfterRetry)}M。点击下面的按钮清空本轮验证成绩，保留故障证据，回到维修台重新配置。
               </Callout>
               <div className="tactics-actions">
                 <Button onClick={() => apply(retryVerification)}>回到维修台重新配置</Button>
@@ -821,6 +823,10 @@ export function TacticsLevel({ level, mode, fastStart, showcaseOptions, savedSta
       </div>
       <p className="tactics-target-title">验证目标（全部达成）</p>
       <TargetList targets={verification.targets} />
+      <Callout tone="amber" title="俱乐部成本">
+        本关返工 {state.failureCount} 次，俱乐部承担 €{formatBudgetM(state.failureCount * RETRY_COST_MILLIONS)}M 修复成本；剩余转会预算 €
+        {formatBudgetM(budgetNow)}M（最低 0，不会为负）。
+      </Callout>
       <ComparisonTable
         head={['对比项', '故障版（一套形态）', '修复版（双形态）']}
         rows={buildTacticsComparison(state).map((row) => [row.label, row.fault, row.fixed])}
@@ -864,6 +870,16 @@ export function TacticsLevel({ level, mode, fastStart, showcaseOptions, savedSta
         <ModuleStatus loadout={state.loadout} />
         {loadoutNames.length > 0 && <p className="tactics-hint">当前：{loadoutNames.join('、')}</p>}
         {state.verify.attempts > 0 && <p className="tactics-hint">已重新验证 {state.verify.attempts} 次。</p>}
+      </Panel>
+      <Panel title="俱乐部预算" subtitle="失败返工会真实扣款，最低 0。">
+        <RuleList
+          items={[
+            { label: '剩余转会预算', value: `€${formatBudgetM(budgetNow)}M`, tone: state.failureCount > 0 ? 'amber' : 'neutral' },
+            { label: '本关返工次数', value: `${state.failureCount} 次`, tone: state.failureCount > 0 ? 'red' : 'neutral' },
+            { label: '单次修复成本', value: `€${formatBudgetM(RETRY_COST_MILLIONS)}M` },
+            { label: '预算来源', value: state.mode === 'showcase' ? '演示默认 45M' : '俱乐部当前预算' },
+          ]}
+        />
       </Panel>
       {(state.phase === 'verify' || state.phase === 'transfer' || state.phase === 'summary') && (
         <Panel title="验证目标" subtitle="归档前必须全部达成。">

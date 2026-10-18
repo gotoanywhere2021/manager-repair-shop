@@ -606,3 +606,19 @@ html[data-reduce-motion='true'] .tactics-player {
   transition-duration: 0.01ms !important;
 }
 
+
+/* v4：俱乐部预算条（失败返工成本） */
+.tactics-budget-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 9px 12px;
+  border: 1px dashed #ddc58e;
+  border-radius: var(--radius-sm);
+  background: var(--amber-soft);
+}
+
+.tactics-budget-strip .tactics-hint {
+  flex: 1 1 220px;
+}

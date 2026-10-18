@@ -1,13 +1,12 @@
 /**
- * 关卡三《转会窗》的纯规则层（v2）。
+ * 关卡三《转会窗》的纯规则层（v4）。
  *
- * v2 在原有「预算与工资空间 + 报价与谈判」之外加入两个有诱惑力但错误/有副作用的模块：
- * - 「清空预算砸巨星」：预算上限砍到 30%，所有目标竞争兴趣 +30；
- * - 「无限等待」：等待压价更多（20%），但每次等待额外 +25 竞争兴趣。
+ * v4 变化：
+ * - 读取俱乐部跨关状态（转会预算 / 周薪空间 / 返工次数），不再写死预算；
+ * - 每次验证未达成并「回到维修台重新配置」都记一次返工，俱乐部承担 €1M 谈判/经纪成本；
+ * - 完成时提交 clubPatch（真实签约、绝对剩余预算、返工次数）。
  *
- * 验证前可以自由安装 / 卸载任意模块；未装齐正确模块或装错模块也能开始窗口，
- * 但结果会真实变差（更少的钱、更高的兴趣、无效验证），并且归档会被逻辑阻止，
- * 只能「回到维修台重新配置」后重新验证。
+ * 模块池本身不再标注「正确 / 错误」：界面只展示实际效果与副作用，由玩家自己判断。
  *
  * 这一层不依赖 React / DOM，状态可 JSON 序列化；随机只用 engine/rng.ts。
  */
@@ -18,6 +17,10 @@ import { buildComparisonRows, recordEvent } from '../../engine/events';
 import type { ComparisonRow } from '../../engine/events';
 import { createEvidence } from '../../engine/types';
 import type {
+  ClubPatch,
+  ClubScoutCandidate,
+  ClubSigning,
+  ClubState,
   ClubUpdate,
   EventLogEntry,
   EventState,
@@ -32,13 +35,25 @@ import type {
    常量：所有数值都写在这里，测试与界面共用同一份来源。
    ========================================================================== */
 
-/** 存档结构版本；v2 增加了错误模块与验证尝试次数。 */
-export const TRANSFER_STATE_VERSION = 2;
+/** 存档结构版本；v5 增加由球探室带入的额外目标。 */
+export const TRANSFER_STATE_VERSION = 4;
 
-/** 转会预算：单位「万欧」，4500 万欧 = €45M。 */
+/** 转会预算默认值：单位「万欧」，4500 万欧 = €45M（club 未定义时使用）。 */
 export const TRANSFER_BUDGET = 4500;
-/** 周薪空间：单位「千欧/周」，350 千欧 = €350k/周。 */
+/** 周薪空间默认值：单位「千欧/周」，350 千欧 = €350k/周（club 未定义时使用）。 */
 export const TRANSFER_WAGE_SPACE = 350;
+/** 每次返工由俱乐部承担的谈判 / 经纪成本：100 万欧 = €1M。 */
+export const REWORK_COST = 100;
+/** 最多读取 3 名球探候选，并从中最多加入 2 名额外目标。 */
+export const SCOUT_TARGETS_READ_MAX = 3;
+export const SCOUT_TARGETS_ADD_MAX = 2;
+/** 球探室额外目标的确定性身价 / 周薪 / 佣金，按位置分类，单位分别是万欧、千欧、万欧。 */
+export const SCOUT_TARGET_ECONOMICS: Record<'FW' | 'MF' | 'DF' | 'GK', { fee: number; wage: number; agentFee: number }> = {
+  FW: { fee: 2200, wage: 160, agentFee: 90 },
+  MF: { fee: 1800, wage: 130, agentFee: 70 },
+  DF: { fee: 1600, wage: 120, agentFee: 60 },
+  GK: { fee: 1100, wage: 80, agentFee: 40 },
+};
 /** 正常模式的转会窗口轮数。 */
 export const TRANSFER_ROUNDS = 3;
 /** 展示短局的转会窗口轮数。 */
@@ -88,13 +103,15 @@ export interface PlayerSeed {
   wage: number;
   agentFee: number;
   baseInterest: number;
+  /** 是否本土青训。 */
+  homegrown: boolean;
 }
 
-/** 三名候选全部为虚构球员。 */
+/** 三名候选全部为虚构球员。homegrown 表示本土青训身份，会随签约写入俱乐部档案。 */
 export const PLAYER_SEEDS: PlayerSeed[] = [
-  { id: 'jiang-ye', name: '江野', position: '边锋', valuation: 2200, wage: 160, agentFee: 80, baseInterest: 34 },
-  { id: 'mula-ti', name: '木拉提', position: '中卫', valuation: 1600, wage: 120, agentFee: 50, baseInterest: 28 },
-  { id: 'chen-yan', name: '陈砚', position: '门将', valuation: 1100, wage: 90, agentFee: 40, baseInterest: 18 },
+  { id: 'jiang-ye', name: '江野', position: '边锋', valuation: 2200, wage: 160, agentFee: 80, baseInterest: 34, homegrown: true },
+  { id: 'mula-ti', name: '木拉提', position: '中卫', valuation: 1600, wage: 120, agentFee: 50, baseInterest: 28, homegrown: false },
+  { id: 'chen-yan', name: '陈砚', position: '门将', valuation: 1100, wage: 90, agentFee: 40, baseInterest: 18, homegrown: true },
 ];
 
 /* ==========================================================================
@@ -165,11 +182,21 @@ export interface TransferPlayer {
   wage: number;
   /** 经纪人佣金，签约时与转会费一起从预算扣除，单位万欧。 */
   agentFee: number;
+  /** 是否本土青训。 */
+  homegrown: boolean;
+  /** 实际支付的转会费（不含佣金），签约成功时写入，单位万欧。 */
+  paidFee: number | null;
   /** 竞争对手兴趣 0~100。 */
   rivalInterest: number;
   status: 'available' | 'signed' | 'lost';
   signedRound: number | null;
   lostRound: number | null;
+  /** 目标来源：原窗口目标，或由球探室报告带入。 */
+  source: 'window' | 'scout';
+  /** 球探知识度 0~100；仅球探室目标有。 */
+  knowledge?: number;
+  /** 球探报告的区域描述（中性化）。 */
+  scoutRegionLabel?: string;
 }
 
 export interface TransfersState {
@@ -182,8 +209,16 @@ export interface TransfersState {
   eventLog: EventLogEntry[];
   evidence: Evidence;
   modules: TransferModules;
-  /** 第几次进入验证（重新配置后 +1，用于区分重试）。 */
+  /** 第几次进入验证（重新配置后 +1，用于区分重试；返工次数 = verifyAttempt - 1）。 */
   verifyAttempt: number;
+  /** 俱乐部提供的起始转会预算，单位万欧。 */
+  startTransferBudget: number;
+  /** 俱乐部提供的起始周薪空间，单位千欧/周。 */
+  startWageBudget: number;
+  /** 进入本关时俱乐部历史上的返工次数（仅用于展示，不计入本关提交）。 */
+  clubFailures: number;
+  /** 球探室提交的候选（最多读取 3 名；开始窗口时最多加入 2 名额外目标）。 */
+  scoutTargets: ClubScoutCandidate[];
   /** 故障试玩里点「直接签下」的球员。 */
   faultSigned: string[];
   /** 是否已经结束故障试玩。 */
@@ -246,6 +281,8 @@ export interface CreateTransfersOptions {
   seed: number;
   fastStart: boolean;
   showcaseOptions: ShowcaseOptions | null;
+  /** 正常模式下的跨关俱乐部状态；展示模式为 undefined。 */
+  club?: ClubState;
 }
 
 /* ==========================================================================
@@ -333,17 +370,32 @@ export function requiredSignings(state: TransfersState): number {
   return state.fastPlay ? TRANSFER_REQUIRED_SIGNINGS_FAST : TRANSFER_REQUIRED_SIGNINGS;
 }
 
-/** 当前模块配置下的转会预算上限；「砸巨星」模块会让它只剩 30%。 */
+/** 本关已经发生的返工次数（每次「回到维修台重新配置」+1）。 */
+export function reworkCount(state: TransfersState): number {
+  return Math.max(0, state.verifyAttempt - 1);
+}
+
+/** 俱乐部因返工累计承担的谈判 / 经纪成本，单位万欧。 */
+export function reworkCostPaid(state: TransfersState): number {
+  return reworkCount(state) * REWORK_COST;
+}
+
+/** 扣除返工成本后、再应用模块效果的基础预算上限。 */
+export function budgetBase(state: TransfersState): number {
+  return Math.max(0, state.startTransferBudget - reworkCostPaid(state));
+}
+
+/** 当前模块配置下的转会预算上限；「砸巨星」模块会让剩余预算再只剩 30%。 */
 export function budgetLimit(state: TransfersState): number {
-  return state.modules.galaxy ? Math.floor(TRANSFER_BUDGET * GALAXY_BUDGET_RATIO) : TRANSFER_BUDGET;
+  return state.modules.galaxy ? Math.floor(budgetBase(state) * GALAXY_BUDGET_RATIO) : budgetBase(state);
 }
 
-/** 当前模块配置下的周薪空间上限。 */
-export function wageLimit(_state: TransfersState): number {
-  return TRANSFER_WAGE_SPACE;
+/** 当前模块配置下的周薪空间上限（来自俱乐部跨关状态）。 */
+export function wageLimit(state: TransfersState): number {
+  return Math.max(0, state.startWageBudget);
 }
 
-/** 正确模块是否都已安装：缺一个，本次验证就不算有效维修。 */
+/** 验证配置是否完整：缺规则时本次结果无效（界面只提示「配置不完整」，不点名模块）。 */
 export function verificationValid(state: TransfersState): boolean {
   return state.modules.budget && state.modules.negotiation;
 }
@@ -501,6 +553,90 @@ function log(state: TransfersState, input: Parameters<typeof recordEvent>[1]): T
   return { ...state, eventLog: recordEvent(state.eventLog, input) };
 }
 
+/** 球探报告区域的中性化描述，不引入真实联赛/俱乐部名称。 */
+export const SCOUT_REGION_LABELS: Record<string, string> = {
+  local: '本地球探网络',
+  'southern-europe': '南欧球探网络',
+  'northern-europe': '北欧球探网络',
+  'south-america': '南美球探网络',
+};
+
+/** 把球探提交的候选规整成可用的额外目标数据；最多读取 3 名。 */
+export function normalizeScoutTargets(raw: unknown): ClubScoutCandidate[] {
+  if (!Array.isArray(raw)) return [];
+  const result: ClubScoutCandidate[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const candidate = item as Record<string, unknown>;
+    if (typeof candidate.id !== 'string' || !candidate.id.trim()) continue;
+    if (typeof candidate.name !== 'string' || !candidate.name.trim()) continue;
+    if (typeof candidate.position !== 'string' || !candidate.position.trim()) continue;
+    if (typeof candidate.region !== 'string') continue;
+    const knowledge = typeof candidate.knowledge === 'number' && Number.isFinite(candidate.knowledge)
+      ? Math.min(100, Math.max(0, Math.round(candidate.knowledge)))
+      : 0;
+    result.push({
+      id: candidate.id,
+      name: candidate.name,
+      position: candidate.position,
+      region: candidate.region,
+      knowledge,
+    });
+    if (result.length >= SCOUT_TARGETS_READ_MAX) break;
+  }
+  return result;
+}
+
+/** 把中文位置映射成四类位置，用于确定性身价/周薪。 */
+export function scoutPositionClass(position: string): 'FW' | 'MF' | 'DF' | 'GK' {
+  const raw = position.trim();
+  if (/门将|守门/.test(raw)) return 'GK';
+  if (/后卫|中卫|边卫|DF/i.test(raw)) return 'DF';
+  if (/中场|后腰|前腰|边前卫|MF/i.test(raw)) return 'MF';
+  return 'FW';
+}
+
+/** 知识度越高，竞争兴趣越低（越确定的目标越少人抢）。 */
+export function scoutTargetRivalInterest(knowledge: number): number {
+  const clamped = Math.min(100, Math.max(0, knowledge));
+  return Math.min(90, Math.max(10, 25 + Math.round((100 - clamped) * 0.55)));
+}
+
+/** 由球探报告生成一名额外目标；位置决定确定性费用，知识度决定竞争兴趣。 */
+export function buildScoutPlayer(target: ClubScoutCandidate): TransferPlayer {
+  const positionClass = scoutPositionClass(target.position);
+  const economics = SCOUT_TARGET_ECONOMICS[positionClass];
+  return {
+    id: `scout-${target.id}`,
+    name: target.name,
+    position: target.position,
+    valuation: economics.fee,
+    askingPrice: economics.fee,
+    wage: economics.wage,
+    agentFee: economics.agentFee,
+    // 本地球探网络发现的球员视为本土青训，其他区域不是。
+    homegrown: target.region === 'local',
+    paidFee: null,
+    rivalInterest: scoutTargetRivalInterest(target.knowledge),
+    status: 'available',
+    signedRound: null,
+    lostRound: null,
+    source: 'scout',
+    knowledge: Math.min(100, Math.max(0, Math.round(target.knowledge))),
+    scoutRegionLabel: SCOUT_REGION_LABELS[target.region] ?? '球探室报告',
+  };
+}
+
+/** 到窗口开始时才追加球探目标；最多 SCOUT_TARGETS_ADD_MAX 名，且不重复追加。 */
+function appendScoutTargets(players: TransferPlayer[], targets: ClubScoutCandidate[]): TransferPlayer[] {
+  const existingIds = new Set(players.map((player) => player.id));
+  const extras = targets
+    .slice(0, SCOUT_TARGETS_ADD_MAX)
+    .map((target) => buildScoutPlayer(target))
+    .filter((player) => !existingIds.has(player.id));
+  return extras.length > 0 ? [...players, ...extras] : players;
+}
+
 function createPlayers(rng: RngState, galaxyPenalty = false): { players: TransferPlayer[]; rng: RngState } {
   let current = rng;
   const players = PLAYER_SEEDS.map((seed) => {
@@ -514,10 +650,13 @@ function createPlayers(rng: RngState, galaxyPenalty = false): { players: Transfe
       askingPrice: seed.valuation,
       wage: seed.wage,
       agentFee: seed.agentFee,
+      homegrown: seed.homegrown,
+      paidFee: null,
       rivalInterest: seed.baseInterest + draw.value + (galaxyPenalty ? GALAXY_INTEREST_PENALTY : 0),
       status: 'available' as const,
       signedRound: null,
       lostRound: null,
+      source: 'window' as const,
     };
   });
   return { players, rng: current };
@@ -535,6 +674,10 @@ function moduleNames(state: TransfersState): string {
 export function createTransfersState(options: CreateTransfersOptions): TransfersState {
   const summon = createPlayers(createRng(options.seed));
   const showcase = options.showcaseOptions;
+  const club = options.club;
+  const scoutTargets = normalizeScoutTargets(club?.scoutedCandidates);
+  const startTransferBudget = club ? Math.max(0, Math.round(club.transferBudget * 100)) : TRANSFER_BUDGET;
+  const startWageBudget = club ? Math.max(0, club.wageBudget) : TRANSFER_WAGE_SPACE;
   let phase: LevelPhase = options.fastStart ? 'faultPlay' : 'commission';
   let modules: TransferModules = { budget: false, negotiation: false, galaxy: false, infiniteWait: false };
   let windowStarted = false;
@@ -553,6 +696,9 @@ export function createTransfersState(options: CreateTransfersOptions): Transfers
     }
   }
 
+  const baseBudget = startTransferBudget;
+  const players = windowStarted ? appendScoutTargets(summon.players, scoutTargets) : summon.players;
+
   return {
     version: TRANSFER_STATE_VERSION,
     phase,
@@ -564,6 +710,10 @@ export function createTransfersState(options: CreateTransfersOptions): Transfers
     evidence: createEvidence(),
     modules,
     verifyAttempt: 1,
+    startTransferBudget,
+    startWageBudget,
+    clubFailures: club ? Math.max(0, club.failures) : 0,
+    scoutTargets,
     faultSigned: [],
     faultFinished: false,
     diagnoseResolved: false,
@@ -571,9 +721,9 @@ export function createTransfersState(options: CreateTransfersOptions): Transfers
     windowStarted,
     windowClosed: false,
     actionsTaken: 0,
-    budget: modules.galaxy ? Math.floor(TRANSFER_BUDGET * GALAXY_BUDGET_RATIO) : TRANSFER_BUDGET,
-    wage: TRANSFER_WAGE_SPACE,
-    players: summon.players,
+    budget: modules.galaxy ? Math.floor(baseBudget * GALAXY_BUDGET_RATIO) : baseBudget,
+    wage: startWageBudget,
+    players,
     transferResolved: false,
     transferSkipped: false,
   };
@@ -590,6 +740,8 @@ export function readyWindowState(seed: number, fastPlay = false): TransfersState
     faultFinished: true,
     diagnoseResolved: true,
     windowStarted: true,
+    budget: initial.startTransferBudget,
+    wage: initial.startWageBudget,
     evidence: { ...initial.evidence, experiencedFault: true },
     fastPlay,
   };
@@ -702,7 +854,9 @@ export function setModule(state: TransfersState, moduleId: TransferModuleId, ins
 export function startWindow(state: TransfersState): TransferActionResult {
   if (state.phase !== 'repair') return { state, ok: false, reason: '现在不在维修阶段。' };
   if (state.windowStarted) return { state, ok: false, reason: '转会窗口已经开始。' };
-  let players = state.players;
+  const withScouts = appendScoutTargets(state.players, state.scoutTargets);
+  const scoutAdded = withScouts.length - state.players.length;
+  let players = withScouts;
   if (state.modules.galaxy) {
     players = players.map((player) =>
       player.status === 'available'
@@ -719,18 +873,20 @@ export function startWindow(state: TransfersState): TransferActionResult {
       windowClosed: false,
       actionsTaken: 0,
       budget: budgetLimit(state),
-      wage: TRANSFER_WAGE_SPACE,
+      wage: wageLimit(state),
       players,
     },
     {
       phase: 'verify',
       action: 'window-open',
-      label: `开始 ${roundLimit(state)} 轮转会窗口（${moduleNames(state)}）`,
-      before: { round: 0, budget: budgetLimit(state), wage: TRANSFER_WAGE_SPACE },
-      after: { round: 1, budget: budgetLimit(state), wage: TRANSFER_WAGE_SPACE },
+      label: `开始 ${roundLimit(state)} 轮转会窗口（${moduleNames(state)}${
+        scoutAdded > 0 ? `；球探室带来 ${scoutAdded} 名目标` : ''
+      }）`,
+      before: { round: 0, budget: budgetLimit(state), wage: wageLimit(state) },
+      after: { round: 1, budget: budgetLimit(state), wage: wageLimit(state), targets: players.length },
       note: verificationValid(state)
         ? `每轮只能对 1 名目标报价或等待；至少签下 ${requiredSignings(state)} 人。`
-        : '正确模块没有装齐：本次验证会记录真实结果，但归档会被阻止。',
+        : '这次验证配置不完整：结果会真实记录，但归档会被阻止。',
     },
   );
   return { state: next, ok: true };
@@ -809,7 +965,7 @@ function endRound(state: TransfersState): TransfersState {
       after: { round: next.round, budget: next.budget, wage: next.wage, signed: signedCount(next) },
       note: verificationValid(next)
         ? `剩余预算 ${formatFee(next.budget)}，剩余工资空间 ${formatWage(next.wage)}。`
-        : '正确模块未装齐，本次验证不算有效维修。',
+        : '验证配置不完整，本次结果不能算作有效维修。',
     });
   }
   return next;
@@ -835,7 +991,13 @@ function applyOffer(state: TransfersState, playerId: string, tier: TransferTier)
   const players = state.players.map((item) => {
     if (item.id !== player.id) return item;
     if (success) {
-      return { ...item, status: 'signed' as const, signedRound: state.round, rivalInterest: beforeInterest };
+      return {
+        ...item,
+        status: 'signed' as const,
+        signedRound: state.round,
+        rivalInterest: beforeInterest,
+        paidFee: check.fee,
+      };
     }
     return { ...item, rivalInterest: afterInterest };
   });
@@ -972,43 +1134,48 @@ export function closeWindow(state: TransfersState): TransferActionResult {
       after: { budget: state.budget, wage: state.wage, signed: signedCount(state) },
       note: verificationValid(state)
         ? `剩余预算 ${formatFee(state.budget)}，剩余工资空间 ${formatWage(state.wage)}。`
-        : '正确模块未装齐，本次验证不算有效维修。',
+        : '验证配置不完整，本次结果不能算作有效维修。',
     },
   );
   return { state: next, ok: true };
 }
 
-/** 「回到维修台重新配置」：清空本次验证成绩，保留故障 / 诊断 / 微教学证据。 */
+/** 「回到维修台重新配置」：清空本次验证成绩，俱乐部承担 €1M 谈判/经纪成本。 */
 export function reconfigure(state: TransfersState): TransferActionResult {
   if (state.phase !== 'verify') return { state, ok: false, reason: '只有在验证阶段可以回到维修台重新配置。' };
   if (!state.windowClosed) return { state, ok: false, reason: '先结束本次转会窗口，再回到维修台重新配置。' };
   const rolled = createPlayers(state.rng);
   const keptLog = state.eventLog.filter((entry) => entry.phase !== 'verify');
+  const nextAttempt = state.verifyAttempt + 1;
+  const nextBase: TransfersState = {
+    ...state,
+    phase: 'repair',
+    players: rolled.players,
+    rng: rolled.rng,
+    round: 1,
+    windowStarted: false,
+    windowClosed: false,
+    actionsTaken: 0,
+    transferResolved: false,
+    transferSkipped: false,
+    verifyAttempt: nextAttempt,
+    eventLog: keptLog,
+    evidence: { ...state.evidence, operatedMechanic: false, transferred: false },
+  };
   const next = log(
     {
-      ...state,
-      phase: 'repair',
-      players: rolled.players,
-      rng: rolled.rng,
-      budget: TRANSFER_BUDGET,
-      wage: TRANSFER_WAGE_SPACE,
-      round: 1,
-      windowStarted: false,
-      windowClosed: false,
-      actionsTaken: 0,
-      transferResolved: false,
-      transferSkipped: false,
-      verifyAttempt: state.verifyAttempt + 1,
-      eventLog: keptLog,
-      evidence: { ...state.evidence, operatedMechanic: false, transferred: false },
+      ...nextBase,
+      budget: budgetLimit(nextBase),
+      wage: wageLimit(nextBase),
     },
     {
       phase: 'repair',
       action: 'reconfigure',
-      label: `回到维修台重新配置（第 ${state.verifyAttempt + 1} 次验证）`,
-      before: { attempt: state.verifyAttempt, signed: signedCount(state) },
-      after: { attempt: state.verifyAttempt + 1, phase: 'repair' },
-      note: '本轮验证成绩已清空；故障试玩、诊断与模块选择证据保留，可以换模块后重新验证。',
+      label: `回到维修台重新配置（第 ${nextAttempt} 次验证）`,
+      before: { attempt: state.verifyAttempt, signed: signedCount(state), budget: state.budget },
+      after: { attempt: nextAttempt, phase: 'repair', budget: budgetLimit(nextBase) },
+      delta: `俱乐部承担 ${formatFee(REWORK_COST)} 返工成本`,
+      note: `每次未达成后的重新配置都会记一次返工：俱乐部承担 ${formatFee(REWORK_COST)} 谈判/经纪成本，从转会预算扣除（最低 0）。本轮验证成绩已清空，故障试玩、诊断与模块选择证据保留。`,
     },
   );
   return { state: next, ok: true };
@@ -1017,14 +1184,22 @@ export function reconfigure(state: TransfersState): TransferActionResult {
 export function reopenWindow(state: TransfersState): TransferActionResult {
   if (state.phase !== 'verify') return { state, ok: false, reason: '现在不在转会窗口阶段。' };
   if (!state.windowClosed) return { state, ok: false, reason: '转会窗口还没有关闭，不需要重开。' };
-  const rolled = createPlayers(state.rng, state.modules.galaxy);
+  const rolled = createPlayers(state.rng);
+  let reopenPlayers = appendScoutTargets(rolled.players, state.scoutTargets);
+  if (state.modules.galaxy) {
+    reopenPlayers = reopenPlayers.map((player) =>
+      player.status === 'available'
+        ? { ...player, rivalInterest: Math.min(RIVAL_HIJACK_AT, player.rivalInterest + GALAXY_INTEREST_PENALTY) }
+        : player,
+    );
+  }
   const next = log(
     {
       ...state,
-      players: rolled.players,
+      players: reopenPlayers,
       rng: rolled.rng,
       budget: budgetLimit(state),
-      wage: TRANSFER_WAGE_SPACE,
+      wage: wageLimit(state),
       round: 1,
       windowClosed: false,
       actionsTaken: 0,
@@ -1055,8 +1230,9 @@ export function archiveProblems(state: TransfersState): string[] {
   if (signedCount(state) < requiredSignings(state)) {
     problems.push(`签约人数不足：只签下 ${signedCount(state)} / ${requiredSignings(state)} 人。`);
   }
-  if (!state.modules.budget) problems.push('缺少「预算与工资空间」模块：本次报价没有预算与工资约束，验证无效。');
-  if (!state.modules.negotiation) problems.push('缺少「报价与谈判」模块：本次报价没有竞争与议价，验证无效。');
+  if (!verificationValid(state)) {
+    problems.push('验证配置不完整：有规则没有安装，本次结果不能算作有效维修。');
+  }
   return problems;
 }
 
@@ -1212,36 +1388,70 @@ export function transferSummaryLines(state: TransfersState): string[] {
   const signature = signed
     .map((player) => `${player.name}（第 ${player.signedRound ?? '?'} 轮签约，周薪 ${formatWage(player.wage)}）`)
     .join('、');
-  const spend = Math.max(0, budgetLimit(state) - state.budget);
+  const spend = Math.max(0, budgetBase(state) - state.budget);
+  const reworks = reworkCount(state);
   return [
-    `规则变化：装上转会预算（${formatFee(budgetLimit(state))}）与周薪空间（${formatWage(TRANSFER_WAGE_SPACE)}）后，转会费和经纪人佣金同时占预算，周薪同时占工资空间；3 轮窗口里，低价 / 正常 / 高价三档报价、等待与竞争对手兴趣共同决定结果。`,
-    `决策变化：第 ${state.verifyAttempt} 次验证共报价/等待 ${state.actionsTaken} 次，花费 ${formatFee(spend)}，签下 ${signed.length} 人${signature ? `（${signature}）` : ''}；每次报价都要在「现在锁定」和「再等一轮争取更低价」之间选择。`,
-    `代价：等待会抬高竞争对手兴趣并可能被截胡，高价保证成交却多付 10%，低价可能被拒绝，预算或工资超限的签约直接被拒绝——窗口关闭时，「没签成」也是真实结果。`,
+    `规则变化：这次从俱乐部继承转会预算 ${formatFee(state.startTransferBudget)} 与周薪空间 ${formatWage(state.startWageBudget)}。转会费和经纪人佣金同时占预算，周薪同时占工资空间；3 轮窗口里，低价 / 正常 / 高价三档报价、等待与竞争对手兴趣共同决定结果。`,
+    `决策变化：第 ${state.verifyAttempt} 次验证共报价/等待 ${state.actionsTaken} 次，本次花费 ${formatFee(spend)}，签下 ${signed.length} 人${signature ? `（${signature}）` : ''}；返工 ${reworks} 次，俱乐部承担 ${formatFee(reworks * REWORK_COST)} 成本。`,
+    `代价：等待会抬高竞争对手兴趣并可能被截胡，高价保证成交却多付 10%，低价可能被拒绝；每次未达成后的重新配置都从转会预算里扣 ${formatFee(REWORK_COST)}，失败会一直影响俱乐部的钱。`,
   ];
 }
 
-/** 俱乐部时间线：只写真实签约、花费、工资与错过原因。 */
+/** 俱乐部时间线：只写真实签约、返工成本、预算变化与跨关引援。 */
 export function buildTransfersClubUpdate(state: TransfersState): ClubUpdate {
   const signed = signedPlayers(state);
-  const spend = Math.max(0, budgetLimit(state) - state.budget);
-  const wageAdded = Math.max(0, TRANSFER_WAGE_SPACE - state.wage);
+  const spend = Math.max(0, budgetBase(state) - state.budget);
+  const wageAdded = Math.max(0, state.startWageBudget - state.wage);
   const missed = missedTargets(state);
+  const reworks = reworkCount(state);
+  const scoutPlayers = state.players.filter((player) => player.source === 'scout');
+  const scoutDetail =
+    scoutPlayers.length > 0
+      ? `球探室带来的目标：${scoutPlayers
+          .map((player) => `${player.name}（${player.position}，知识度 ${player.knowledge ?? 0}%，竞争兴趣 ${player.rivalInterest}）`)
+          .join('；')}。`
+      : state.scoutTargets.length > 0
+        ? '球探室带来的目标：本局没有把球探报告加入转会窗口。'
+        : '球探室带来的目标：本局没有球探报告。';
   const details = [
-    `转会窗：第 ${state.verifyAttempt} 次验证报价/等待 ${state.actionsTaken} 次，签下 ${signed.length} 人${
+    `转会窗：第 ${state.verifyAttempt} 次验证、返工 ${reworks} 次，报价/等待 ${state.actionsTaken} 次，签下 ${signed.length} 人${
       signed.length > 0
         ? `（${signed.map((player) => `${player.name} 第 ${player.signedRound ?? '?'} 轮`).join('、')}）`
         : ''
     }。`,
-    `预算：花费 ${formatFee(spend)} / 上限 ${formatFee(budgetLimit(state))}；新增周薪 ${formatWage(wageAdded)} / 上限 ${formatWage(TRANSFER_WAGE_SPACE)}。`,
+    `预算：俱乐部起始 ${formatFee(state.startTransferBudget)}，本次花费 ${formatFee(spend)}，返工成本 ${formatFee(
+      reworks * REWORK_COST,
+    )}，剩余 ${formatFee(state.budget)}；新增周薪 ${formatWage(wageAdded)}，剩余 ${formatWage(state.wage)} / ${formatWage(state.startWageBudget)}。`,
     missed.length > 0
       ? `错过：${missed.map((item) => `${item.name}（${item.reason}）`).join('；')}`
       : '错过：没有目标在窗口里流失。',
-    `模块：${moduleNames(state)}${verificationValid(state) ? '（验证有效）' : '（验证无效，正确模块未装齐）'}。`,
+    `跨关引援：${
+      signed.length > 0 ? signed.map((player) => `${player.name}（${player.position}）`).join('、') : '本次没有签下球员'
+    }将进入赛季名单；模块：${moduleNames(state)}${verificationValid(state) ? '（验证有效）' : '（验证配置不完整）'}。`,
+    scoutDetail,
   ];
   return {
-    headline: `转会窗关闭：签下 ${signed.length}/${state.players.length} 人，花费 ${formatFee(spend)}`,
+    headline: `转会窗关闭：签下 ${signed.length}/${state.players.length} 人，花费 ${formatFee(spend)}，返工 ${reworks} 次`,
     details,
     nextBrief: '下一份委托：把新援注册进 25 人名单，补齐本土青训与位置覆盖。',
+  };
+}
+
+/** 跨关俱乐部增量：真实签约、绝对剩余预算、返工次数。 */
+export function buildTransfersClubPatch(state: TransfersState): ClubPatch {
+  const signings: ClubSigning[] = signedPlayers(state).map((player) => ({
+    id: player.id,
+    name: player.name,
+    position: player.position,
+    fee: Math.max(0, Math.round(((player.paidFee ?? player.askingPrice) / 100) * 10) / 10),
+    wage: player.wage,
+    homegrown: player.homegrown,
+  }));
+  return {
+    signings,
+    transferBudget: Math.max(0, Math.round((state.budget / 100) * 10) / 10),
+    wageBudget: Math.max(0, state.wage),
+    addFailures: reworkCount(state),
   };
 }
 
@@ -1253,29 +1463,72 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function revivePlayer(raw: unknown): TransferPlayer | null {
+function reviveScoutTargets(raw: unknown): ClubScoutCandidate[] | null {
+  if (!Array.isArray(raw) || raw.length > SCOUT_TARGETS_READ_MAX) return null;
+  const result: ClubScoutCandidate[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') return null;
+    const data = item as Record<string, unknown>;
+    if (typeof data.id !== 'string' || !data.id) return null;
+    if (typeof data.name !== 'string' || !data.name) return null;
+    if (typeof data.position !== 'string' || !data.position) return null;
+    if (typeof data.region !== 'string') return null;
+    if (!isFiniteNumber(data.knowledge)) return null;
+    result.push({
+      id: data.id,
+      name: data.name,
+      position: data.position,
+      region: data.region,
+      knowledge: Math.min(100, Math.max(0, Math.round(data.knowledge))),
+    });
+  }
+  return result;
+}
+
+function revivePlayer(raw: unknown, scoutTargets: ClubScoutCandidate[]): TransferPlayer | null {
   if (!raw || typeof raw !== 'object') return null;
   const data = raw as Record<string, unknown>;
-  const seed = PLAYER_SEEDS.find((item) => item.id === data.id);
-  if (!seed) return null;
+  const isScout = typeof data.id === 'string' && data.id.startsWith('scout-');
+  const seed = isScout ? undefined : PLAYER_SEEDS.find((item) => item.id === data.id);
+  const target = isScout ? scoutTargets.find((item) => `scout-${item.id}` === data.id) : undefined;
+  if (!seed && !target) return null;
   if (typeof data.name !== 'string' || typeof data.position !== 'string') return null;
   if (!isFiniteNumber(data.valuation) || !isFiniteNumber(data.askingPrice)) return null;
   if (!isFiniteNumber(data.wage) || !isFiniteNumber(data.agentFee) || !isFiniteNumber(data.rivalInterest)) return null;
   if (data.status !== 'available' && data.status !== 'signed' && data.status !== 'lost') return null;
   if (data.signedRound !== null && !isFiniteNumber(data.signedRound)) return null;
   if (data.lostRound !== null && !isFiniteNumber(data.lostRound)) return null;
+  if (data.paidFee !== null && !isFiniteNumber(data.paidFee)) return null;
+  if (isScout) {
+    if (data.source !== 'scout') return null;
+    if (!isFiniteNumber(data.knowledge)) return null;
+  } else if (data.source !== 'window') {
+    return null;
+  }
   return {
-    id: seed.id,
+    id: data.id as string,
     name: data.name,
     position: data.position,
     valuation: data.valuation,
     askingPrice: Math.max(1, data.askingPrice),
     wage: data.wage,
     agentFee: data.agentFee,
+    homegrown:
+      typeof data.homegrown === 'boolean' ? data.homegrown : seed ? seed.homegrown : target?.region === 'local',
+    paidFee: data.paidFee as number | null,
     rivalInterest: Math.min(RIVAL_HIJACK_AT, Math.max(0, data.rivalInterest)),
     status: data.status,
     signedRound: data.signedRound as number | null,
     lostRound: data.lostRound as number | null,
+    source: isScout ? 'scout' : 'window',
+    knowledge: isScout ? Math.min(100, Math.max(0, Math.round(data.knowledge as number))) : undefined,
+    scoutRegionLabel: isScout
+      ? typeof data.scoutRegionLabel === 'string'
+        ? data.scoutRegionLabel
+        : target
+          ? SCOUT_REGION_LABELS[target.region] ?? '球探室报告'
+          : undefined
+      : undefined,
   };
 }
 
@@ -1314,14 +1567,22 @@ export function reviveTransfersState(raw: unknown): TransfersState | null {
   const rng = reviveRng(data.rng);
   const eventLog = reviveEventLog(data.eventLog);
   if (!eventLog) return null;
-  if (!Array.isArray(data.players) || data.players.length !== PLAYER_SEEDS.length) return null;
+  const scoutTargets = reviveScoutTargets(data.scoutTargets);
+  if (!scoutTargets) return null;
+  if (!Array.isArray(data.players)) return null;
+  const expectedExtraCount = data.windowStarted
+    ? Math.min(scoutTargets.length, SCOUT_TARGETS_ADD_MAX)
+    : 0;
+  if (data.players.length !== PLAYER_SEEDS.length + expectedExtraCount) return null;
   const players: TransferPlayer[] = [];
   for (const item of data.players) {
-    const player = revivePlayer(item);
+    const player = revivePlayer(item, scoutTargets);
     if (!player) return null;
     players.push(player);
   }
   if (new Set(players.map((player) => player.id)).size !== players.length) return null;
+  const baseIds = new Set(players.filter((player) => player.source === 'window').map((player) => player.id));
+  if (baseIds.size !== PLAYER_SEEDS.length || PLAYER_SEEDS.some((seed) => !baseIds.has(seed.id))) return null;
   if (!data.modules || typeof data.modules !== 'object') return null;
   const modulesRaw = data.modules as Record<string, unknown>;
   const modules: TransferModules = { budget: false, negotiation: false, galaxy: false, infiniteWait: false };
@@ -1356,6 +1617,9 @@ export function reviveTransfersState(raw: unknown): TransfersState | null {
   if (!isFiniteNumber(data.round) || data.round < 0) return null;
   if (!isFiniteNumber(data.actionsTaken) || data.actionsTaken < 0) return null;
   if (!isFiniteNumber(data.verifyAttempt) || data.verifyAttempt < 1) return null;
+  if (!isFiniteNumber(data.startTransferBudget) || data.startTransferBudget < 0) return null;
+  if (!isFiniteNumber(data.startWageBudget) || data.startWageBudget < 0) return null;
+  if (!isFiniteNumber(data.clubFailures) || data.clubFailures < 0) return null;
   if (!isFiniteNumber(data.budget) || data.budget < 0) return null;
   if (!isFiniteNumber(data.wage) || data.wage < 0) return null;
   if (!isFiniteNumber(data.seed)) return null;
@@ -1375,6 +1639,10 @@ export function reviveTransfersState(raw: unknown): TransfersState | null {
     },
     modules,
     verifyAttempt: Math.floor(data.verifyAttempt),
+    startTransferBudget: data.startTransferBudget,
+    startWageBudget: data.startWageBudget,
+    clubFailures: Math.floor(data.clubFailures),
+    scoutTargets,
     faultSigned,
     faultFinished: data.faultFinished as boolean,
     diagnoseResolved: data.diagnoseResolved as boolean,
@@ -1395,8 +1663,9 @@ export function reviveTransfersState(raw: unknown): TransfersState | null {
    ========================================================================== */
 
 export const TRANSFER_RULE_LINES: { label: string; value: string }[] = [
-  { label: '转会预算', value: `${formatFee(TRANSFER_BUDGET)}，转会费 + 经纪人佣金都从这里扣` },
-  { label: '周薪空间', value: `${formatWage(TRANSFER_WAGE_SPACE)}，签约同时占用周薪` },
+  { label: '转会预算', value: '从俱乐部剩余转会预算开始；转会费 + 经纪人佣金都从这里扣' },
+  { label: '周薪空间', value: '从俱乐部剩余周薪空间开始；签约同时占用周薪' },
+  { label: '返工成本', value: `每次未达成后重新配置，俱乐部承担 ${formatFee(REWORK_COST)} 谈判/经纪成本（最低 0）` },
   { label: '窗口轮次', value: `${TRANSFER_ROUNDS} 轮，每轮只能报价 1 人或者等待 1 人` },
   { label: '低价报价', value: '支付要价 90%，对手兴趣 +30；兴趣 ≥ 50 时会被拒绝' },
   { label: '正常报价', value: '支付当前要价；兴趣 ≥ 80 时会被拒绝' },

@@ -181,7 +181,19 @@ describe('sanitizeProgress 数据规整', () => {
       lastSavedAt: new Date(0).toISOString(),
       levelStates: {},
       completedAt: {},
-      club: { name: '北港联', season: '2026/27', timeline: [] },
+      club: {
+        name: '北港联',
+        season: '2026/27',
+        week: 0,
+        transferBudget: 45,
+        wageBudget: 350,
+        failures: 0,
+        tactics: null,
+        scoutedCandidates: [],
+        signings: [],
+        timeline: [],
+        seasonReport: null,
+      },
     });
   });
 });

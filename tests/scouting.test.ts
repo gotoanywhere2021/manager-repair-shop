@@ -2,24 +2,29 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { getLevel } from '../src/game/levels';
-import type { LevelScreenProps } from '../src/game/engine/types';
+import type { ClubState, LevelScreenProps } from '../src/game/engine/types';
 import {
+  DEFAULT_TRANSFER_BUDGET,
   DIAGNOSE_CORRECT_ID,
   HIGHLIGHTS_HALF_WIDTH,
   KNOWLEDGE_MAX,
   REGIONS,
+  RETRY_COST_MILLIONS,
   SCOUTING_MODULES,
   SCOUTING_TARGETS,
   SCOUTS_PER_ROUND,
   SCOUT_CANDIDATES,
+  SCOUT_NETWORK_FEE_MILLIONS,
   TRANSFER_OPTIONS,
   WIDE_NET_GAIN,
   WIDE_NET_SCOUTS,
   archiveBlockReason,
   archiveBlocker,
   assignScout,
+  budgetAfterRetries,
   buildArchiveSummary,
   buildCandidateReports,
+  buildClubPatch,
   buildClubUpdate,
   buildCompletionResult,
   canComplete,
@@ -45,12 +50,14 @@ import {
   pickFaultCandidate,
   precisionLabel,
   precisionRank,
+  remainingBudget,
   reportPrecision,
   reportRange,
   resolveDiagnose,
   resolveTransfer,
   retryVerification,
   reviveScoutingState,
+  scoutedCandidatesPatch,
   scoutsAvailable,
   selectCandidate,
   skipTransferInShowcase,
@@ -65,6 +72,20 @@ import type { RegionId, ScoutingInitOptions, ScoutingState } from '../src/game/l
 import { ScoutingLevel } from '../src/game/levels/scouting/ScoutingLevel';
 
 const NORMAL: ScoutingInitOptions = { mode: 'normal', fastStart: false, showcaseOptions: null };
+
+const CLUB: ClubState = {
+  name: '北港联',
+  season: '2026/27',
+  week: 0,
+  transferBudget: DEFAULT_TRANSFER_BUDGET,
+  wageBudget: 350,
+  failures: 0,
+  tactics: null,
+  scoutedCandidates: [],
+  signings: [],
+  timeline: [],
+  seasonReport: null,
+};
 
 function showcase(startPhase: 'faultPlay' | 'repair' | 'verify', fastPlay = true): ScoutingInitOptions {
   return { mode: 'showcase', fastStart: false, showcaseOptions: { seed: 20251018, fastPlay, startPhase } };
@@ -127,6 +148,7 @@ function makeProps(overrides: Partial<LevelScreenProps> = {}): LevelScreenProps 
     mode: 'normal',
     fastStart: true,
     showcaseOptions: null,
+    club: CLUB,
     savedState: undefined,
     onSaveState: vi.fn(),
     onComplete: vi.fn(),
@@ -420,11 +442,16 @@ describe('球探室 v2：同种子、存档、展示模式与俱乐部时间线'
     expect(restored?.loadout).toEqual(first.loadout);
   });
 
-  it('合法 v2 存档可以恢复，v1/损坏存档安全回退', () => {
+  it('合法 v3 存档可以恢复，v1/v2/损坏存档安全回退', () => {
     const state = reachSelection();
     const base = JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
-    expect(reviveScoutingState(base, NORMAL)).not.toBeNull();
+    const restored = reviveScoutingState(base, NORMAL);
+    expect(restored).not.toBeNull();
+    expect(restored?.budget).toBe(state.budget);
+    expect(restored?.failureCount).toBe(state.failureCount);
     expect(reviveScoutingState({ ...base, version: 1 }, NORMAL)).toBeNull();
+    expect(reviveScoutingState({ ...base, version: 2 }, NORMAL)).toBeNull();
+    expect(reviveScoutingState({ ...base, budget: -1 }, NORMAL)).toBeNull();
     expect(reviveScoutingState({ ...base, knowledge: { local: 999 } }, NORMAL)).toBeNull();
     expect(reviveScoutingState({ ...base, loadout: { dispatch: 'wide-net', report: 'wrong' } }, NORMAL)).toBeNull();
     expect(reviveScoutingState({ ...base, dispatches: ['local', 'local'] }, NORMAL)).toBeNull();
@@ -473,7 +500,108 @@ describe('球探室 v2：同种子、存档、展示模式与俱乐部时间线'
   });
 });
 
+describe('球探室 v4：返工成本、预算与 clubPatch', () => {
+  function failedWideNet(): ScoutingState {
+    return wideNetFailedState();
+  }
+
+  it('失败返工每次扣 €0.5M，完成另扣 €1M 维护费，预算最低 0', () => {
+    let state = failedWideNet();
+    expect(state.budget).toBe(45);
+    expect(budgetAfterRetries(state)).toBe(45);
+    expect(remainingBudget(state)).toBe(45 - SCOUT_NETWORK_FEE_MILLIONS);
+    expect(state.failureCount).toBe(0);
+
+    state = retryVerification(state);
+    expect(state.failureCount).toBe(1);
+    expect(budgetAfterRetries(state)).toBe(45 - RETRY_COST_MILLIONS);
+    expect(remainingBudget(state)).toBe(45 - RETRY_COST_MILLIONS - SCOUT_NETWORK_FEE_MILLIONS);
+
+    state = startVerify(state);
+    state = finishRound(state, ['local', 'southern-europe', 'northern-europe']);
+    state = finishRound(state, ['local', 'southern-europe', 'northern-europe']);
+    state = selectCandidate(state, 'lin-tuo');
+    state = retryVerification(state);
+    expect(state.failureCount).toBe(2);
+    expect(budgetAfterRetries(state)).toBe(44);
+    expect(remainingBudget(state)).toBe(43);
+
+    const poor: ScoutingState = { ...failedWideNet(), budget: 0.5 };
+    const floorState = retryVerification(poor);
+    expect(floorState.failureCount).toBe(1);
+    expect(budgetAfterRetries(floorState)).toBe(0);
+    expect(remainingBudget(floorState)).toBe(0);
+  });
+
+  it('正常模式 clubPatch 提交 3 名真实候选、绝对预算与返工次数', () => {
+    let state = failedWideNet();
+    state = retryVerification(state);
+    state = toggleScoutingModule(state, 'wide-net');
+    state = installCorrect(state);
+    state = startVerify(state);
+    state = finishRound(state, ['local', 'southern-europe']);
+    state = finishRound(state, ['northern-europe', 'south-america']);
+    state = selectCandidate(state, 'lin-tuo');
+    state = openTransfer(state);
+    state = resolveTransfer(state);
+    state = openSummary(state);
+
+    const result = buildCompletionResult(state);
+    expect(result.clubPatch).toBeTruthy();
+    const patch = result.clubPatch as NonNullable<typeof result.clubPatch>;
+    expect(patch.addFailures).toBe(1);
+    expect(patch.transferBudget).toBe(43.5);
+    const patchedCandidates = patch.scoutedCandidates ?? [];
+    expect(patchedCandidates).toHaveLength(3);
+    for (const candidate of patchedCandidates) {
+      const source = SCOUT_CANDIDATES.find((item) => item.id === candidate.id);
+      expect(source).toBeTruthy();
+      expect(candidate.knowledge).toBe(state.knowledge[(source as { region: RegionId }).region]);
+    }
+    expect(patchedCandidates).toEqual(scoutedCandidatesPatch(state));
+    expect(result.clubUpdate.details.join(' ')).toContain('返工 1 次');
+    expect(result.clubUpdate.details.join(' ')).toContain('€0.5M');
+    expect(result.clubUpdate.details.join(' ')).toContain('€1M 球探网络维护费');
+    expect(result.clubUpdate.details.join(' ')).toContain('剩余转会预算 €43.5M');
+  });
+
+  it('预算从 props.club 起步；展示模式默认 45M 且不提交 clubPatch', () => {
+    const normal = createInitialScoutingState({ ...NORMAL, startingBudget: 20 }, 42);
+    expect(normal.budget).toBe(20);
+    expect(remainingBudget(normal)).toBe(19);
+
+    let demo = createInitialScoutingState(showcase('verify'), 20251018);
+    expect(demo.budget).toBe(DEFAULT_TRANSFER_BUDGET);
+    expect(buildClubPatch(demo)).toBeNull();
+    demo = finishRound(demo, ['local', 'southern-europe']);
+    demo = selectCandidate(demo, 'lin-tuo');
+    demo = openTransfer(demo);
+    demo = skipTransferInShowcase(demo);
+    const result = buildCompletionResult(demo);
+    expect(result.clubPatch).toBeUndefined();
+    expect(result.clubUpdate).toBeTruthy();
+  });
+});
+
 describe('球探室 v2：UI 冒烟测试', () => {
+  it('维修台不出现推荐/错误模块标签，玩家自己组合模块', () => {
+    render(
+      createElement(
+        ScoutingLevel,
+        makeProps({
+          mode: 'showcase',
+          fastStart: false,
+          showcaseOptions: { seed: 20251018, fastPlay: true, startPhase: 'repair' },
+        }),
+      ),
+    );
+    expect(screen.queryByText(/推荐/)).toBeNull();
+    expect(screen.queryByText(/错误模块/)).toBeNull();
+    expect(screen.queryByText(/有副作用/)).toBeNull();
+    expect(screen.getAllByText('有限球探').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('广撒网考察').length).toBeGreaterThan(0);
+  });
+
   it('正确模块：从故障考察走到归档，onComplete 只触发一次且带 clubUpdate', () => {
     const onComplete = vi.fn();
     const props = makeProps({ onComplete });
@@ -525,8 +653,8 @@ describe('球探室 v2：UI 冒烟测试', () => {
     clickFaultFlow();
     clickDiagnoseFlow();
 
-    // 只装错误模块「广撒网考察」。
-    fireEvent.click(screen.getByRole('button', { name: '安装模块：广撒网考察 · 错误模块' }));
+    // 只装有副作用的「广撒网考察」。
+    fireEvent.click(screen.getByRole('button', { name: '安装模块：广撒网考察' }));
     fireEvent.click(screen.getByRole('button', { name: /开始派遣/ }));
     fireEvent.click(screen.getByRole('button', { name: '派球探到本地球市' }));
     fireEvent.click(screen.getByRole('button', { name: '派球探到南欧' }));
@@ -539,11 +667,15 @@ describe('球探室 v2：UI 冒烟测试', () => {
 
     clickSelectableCandidate('本地球市');
     expect(screen.getByText(/验证未达成/)).toBeTruthy();
+    expect(screen.getAllByText(/€0.5M/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/转会预算将受影响/).length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: '完成验证，去迁移' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '回到维修台重新配置' }));
+    expect(screen.getAllByText(/本关返工 1 次/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/€44.5M/).length).toBeGreaterThan(0);
 
-    // 重新配置：卸载错误模块，安装两个正确模块，重新派遣。
-    fireEvent.click(screen.getByRole('button', { name: '卸载模块：广撒网考察 · 错误模块' }));
+    // 重新配置：卸载有副作用的模块，安装两个模块，重新派遣。
+    fireEvent.click(screen.getByRole('button', { name: '卸载模块：广撒网考察' }));
     fireEvent.click(screen.getByRole('button', { name: '安装模块：有限球探' }));
     fireEvent.click(screen.getByRole('button', { name: '安装模块：知识度报告' }));
     fireEvent.click(screen.getByRole('button', { name: /重新派遣/ }));
@@ -580,8 +712,13 @@ describe('球探室 v2：UI 冒烟测试', () => {
     fireEvent.click(screen.getByRole('button', { name: '演示跳过迁移题' }));
     fireEvent.click(screen.getByRole('button', { name: /完成归档，返回修理铺/ }));
     expect(onComplete).toHaveBeenCalledTimes(1);
-    const result = onComplete.mock.calls[0][0] as { evidence: { transferred: boolean }; clubUpdate?: { headline: string } };
+    const result = onComplete.mock.calls[0][0] as {
+      evidence: { transferred: boolean };
+      clubUpdate?: { headline: string };
+      clubPatch?: unknown;
+    };
     expect(result.evidence.transferred).toBe(false);
     expect(result.clubUpdate?.headline).toBeTruthy();
+    expect(result.clubPatch).toBeUndefined();
   });
 });

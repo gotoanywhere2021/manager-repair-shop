@@ -50,8 +50,9 @@ describe('用户流程冒烟测试（足球经理题材）', () => {
     fireEvent.click(screen.getByRole('radio', { name: /控球和无球需要两套不同的站位与职责/ }));
     clickButton('提交判断');
     clickButton('开始维修');
-    clickButton('安装双形态战术');
-    clickButton('安装职责分工');
+    // v4 移除了「推荐组合」快捷按钮，需要从模块池逐个安装正确结构。
+    fireEvent.click(screen.getAllByRole('button', { name: /安装模块：双形态战术/ })[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: /安装模块：职责分工/ })[0]);
     clickButton('开始验证');
 
     for (let index = 0; index < 3; index += 1) {
@@ -75,16 +76,27 @@ describe('用户流程冒烟测试（足球经理题材）', () => {
       completedLevels: string[];
       unlockedMechanisms: string[];
       levelStates: Record<string, unknown>;
-      club: { name: string; timeline: { levelId: string; headline: string }[] };
+      club: {
+        week: number;
+        transferBudget: number;
+        failures: number;
+        tactics: { possessionShape: string } | null;
+        timeline: { levelId: string; headline: string }[];
+      };
     };
     expect(parsed.completedLevels).toContain('tactics');
     expect(parsed.unlockedMechanisms).toContain('tactics-shapes');
     expect(parsed.levelStates.tactics).toBeUndefined();
-    // 俱乐部时间线写入真实战术板结果。
+    // 俱乐部时间线写入真实战术板结果，并把战术配置带入后续关卡。
     expect(parsed.club.timeline).toHaveLength(1);
     expect(parsed.club.timeline[0].levelId).toBe('tactics');
     expect(parsed.club.timeline[0].headline).toContain('战术板');
+    expect(parsed.club.tactics?.possessionShape).toBe('4-3-3');
+    expect(parsed.club.week).toBe(1);
+    expect(parsed.club.failures).toBe(0);
+    expect(parsed.club.transferBudget).toBe(45);
     expect(screen.getByText('最近一份维修结果')).toBeTruthy();
+    expect(screen.getByText('战术板产出')).toBeTruthy();
     expect(screen.getAllByText(/最近更新/).length).toBeGreaterThan(0);
 
     // 第二关已解锁。

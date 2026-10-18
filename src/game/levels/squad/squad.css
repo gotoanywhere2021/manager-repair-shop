@@ -841,3 +841,56 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* v4：跨关引援与返工成本 */
+.squad-inherited {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-weak);
+}
+
+.squad-inherited-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+}
+
+.squad-inherited-list li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.squad-inherited-list strong {
+  color: var(--ink);
+}
+
+.squad-inherited-list span {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.squad-roster-group li.is-inherited {
+  box-shadow: 0 0 0 1px var(--line-strong) inset;
+}
+
+.squad-inherited-dot {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 9px;
+  font-weight: 800;
+}

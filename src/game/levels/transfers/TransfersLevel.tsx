@@ -22,6 +22,7 @@ import {
   DIAGNOSE_EXPLANATIONS,
   DIAGNOSE_OPTIONS,
   RIVAL_HIJACK_AT,
+  REWORK_COST,
   TRANSFER_FAULT_NOTE,
   TRANSFER_MODULE_IDS,
   TRANSFER_MODULE_POOL,
@@ -29,11 +30,12 @@ import {
   TRANSFER_QUIZ_EXPLANATIONS,
   TRANSFER_QUIZ_OPTIONS,
   TRANSFER_RULE_LINES,
-  TRANSFER_WAGE_SPACE,
   advanceToTransfer,
   answerTransfer,
   archiveProblems,
+  buildTransfersClubPatch,
   buildTransfersClubUpdate,
+  budgetBase,
   budgetLimit,
   canWaitTarget,
   closeWindow,
@@ -51,6 +53,8 @@ import {
   requiredSignings,
   resolveDiagnosis,
   reviveTransfersState,
+  reworkCostPaid,
+  reworkCount,
   roundLimit,
   setModule,
   signedCount,
@@ -62,6 +66,7 @@ import {
   transfersComparison,
   transferSummaryLines,
   verificationValid,
+  wageLimit,
   waitTarget,
 } from './logic';
 import type { TransferActionResult, TransferModuleId, TransfersState, TransferTier } from './logic';
@@ -95,7 +100,9 @@ function SettlementDetails({ state }: { state: TransfersState }) {
   const negotiationLog = state.eventLog.filter((entry) =>
     ['offer-low', 'offer-normal', 'offer-high', 'wait'].includes(entry.action),
   );
-  const spend = Math.max(0, budgetLimit(state) - state.budget);
+  const spend = Math.max(0, budgetBase(state) - state.budget);
+  const wageAdded = Math.max(0, state.startWageBudget - state.wage);
+  const reworks = reworkCount(state);
   return (
     <div className="transfers-settlement">
       <div className="transfers-stat-row">
@@ -108,14 +115,20 @@ function SettlementDetails({ state }: { state: TransfersState }) {
         <StatTile
           label="已花费预算"
           value={formatFee(spend)}
-          hint={`上限 ${formatFee(budgetLimit(state))}`}
+          hint={`本次可用 ${formatFee(budgetLimit(state))}`}
           tone={spend <= budgetLimit(state) ? 'green' : 'red'}
         />
         <StatTile
           label="新增周薪"
-          value={formatWage(Math.max(0, TRANSFER_WAGE_SPACE - state.wage))}
-          hint={`上限 ${formatWage(TRANSFER_WAGE_SPACE)}`}
+          value={formatWage(wageAdded)}
+          hint={`俱乐部空间 ${formatWage(state.startWageBudget)}`}
           tone={state.wage >= 0 ? 'green' : 'red'}
+        />
+        <StatTile
+          label="返工"
+          value={`${reworks} 次`}
+          hint={`已承担 ${formatFee(reworks * REWORK_COST)}`}
+          tone={reworks > 0 ? 'amber' : 'neutral'}
         />
         <StatTile label="验证次数" value={`第 ${state.verifyAttempt} 次`} hint={`已报价/等待 ${state.actionsTaken} 次`} />
       </div>
@@ -131,15 +144,15 @@ function SettlementDetails({ state }: { state: TransfersState }) {
         <Meter
           label={state.modules.budget ? '周薪空间' : '周薪空间（规则未启用，本次不占工资）'}
           value={state.modules.budget ? state.wage : 0}
-          max={TRANSFER_WAGE_SPACE}
+          max={wageLimit(state)}
           tone={state.modules.budget ? (state.wage > 0 ? 'green' : 'amber') : 'amber'}
-          valueLabel={`${formatWage(state.wage)} / ${formatWage(TRANSFER_WAGE_SPACE)}`}
+          valueLabel={`${formatWage(state.wage)} / ${formatWage(wageLimit(state))}`}
         />
       </div>
 
       {problems.length === 0 ? (
         <Callout tone="green" icon="✓" title="目标达成，验证有效">
-          至少签下 {requiredSignings(state)} 人，且预算与工资模块都已装上，可以进入迁移题。
+          至少签下 {requiredSignings(state)} 人，验证配置完整，可以进入迁移题。
         </Callout>
       ) : (
         <Callout tone="red" icon="✕" title="还不能归档">
@@ -148,6 +161,13 @@ function SettlementDetails({ state }: { state: TransfersState }) {
               <li key={problem}>{problem}</li>
             ))}
           </ul>
+          <p className="transfers-muted">
+            回到维修台重新配置会记 1 次返工：俱乐部承担 {formatFee(REWORK_COST)} 返工成本（谈判/经纪），转会预算将受影响（下次验证可用{' '}
+            {formatFee(
+              (state.modules.galaxy ? Math.floor(Math.max(0, budgetBase(state) - REWORK_COST) * 0.3) : Math.max(0, budgetBase(state) - REWORK_COST)),
+            )}
+            ）。
+          </p>
         </Callout>
       )}
 
@@ -233,6 +253,16 @@ function NegotiationCard({
         {lost && <Chip tone="red" icon="✕">被截胡</Chip>}
         {!signed && !lost && <Chip tone="neutral">待谈</Chip>}
       </header>
+      {player.source === 'scout' && (
+        <div className="transfers-scout-report">
+          <Chip tone="purple" icon="🔭">
+            球探室报告
+          </Chip>
+          <p>
+            知识度 {player.knowledge ?? 0}% · {player.scoutRegionLabel ?? '球探室报告'} · 初始竞争兴趣由知识度决定
+          </p>
+        </div>
+      )}
       <dl className="transfers-player-facts">
         <div>
           <dt>当前要价</dt>
@@ -322,6 +352,7 @@ export function TransfersLevel({
   mode,
   fastStart,
   showcaseOptions,
+  club,
   savedState,
   onSaveState,
   onComplete,
@@ -335,6 +366,7 @@ export function TransfersLevel({
       seed: showcaseOptions?.seed ?? randomSeed(),
       fastStart,
       showcaseOptions,
+      club,
     });
   });
   const [notice, setNotice] = useState<string | null>(null);
@@ -356,6 +388,7 @@ export function TransfersLevel({
       evidence: state.evidence,
       summary: transferSummaryLines(state),
       clubUpdate: buildTransfersClubUpdate(state),
+      clubPatch: buildTransfersClubPatch(state),
     });
   }
   useEffect(() => {
@@ -377,6 +410,24 @@ export function TransfersLevel({
   const clubUpdate = buildTransfersClubUpdate(state);
   const sideContent = (
     <>
+      <Panel
+        title="俱乐部状态"
+        subtitle={mode === 'showcase' ? '演示模式：使用默认预算，不写正式进度' : '跨关资源，失败会真实减少'}
+        actions={<Chip tone={reworkCount(state) > 0 ? 'amber' : 'neutral'}>返工 {reworkCount(state)} 次</Chip>}
+      >
+        <RuleList
+          items={[
+            { label: '转会预算（起始）', value: formatFee(state.startTransferBudget) },
+            { label: '当前可用预算', value: formatFee(budgetLimit(state)) },
+            { label: '周薪空间（起始）', value: formatWage(state.startWageBudget) },
+            { label: '俱乐部历史返工', value: `${state.clubFailures} 次` },
+            { label: '本关已承担返工成本', value: formatFee(reworkCostPaid(state)) },
+          ]}
+        />
+        <p className="transfers-muted">
+          每次验证未达成后重新配置：俱乐部承担 {formatFee(REWORK_COST)} 返工成本（谈判/经纪），转会预算将受影响（最低 0）。
+        </p>
+      </Panel>
       {mode === 'showcase' && (
         <Panel title="演示模式" tone="amber">
           <p className="transfers-muted">
@@ -388,22 +439,18 @@ export function TransfersLevel({
       <Panel title="本关规则" subtitle="所有数值都从这里来">
         <RuleList items={TRANSFER_RULE_LINES.map((line) => ({ label: line.label, value: line.value }))} />
       </Panel>
-      <Panel title="模块状态" actions={<Chip tone={verificationValid(state) ? 'green' : 'amber'}>{moduleCount} / 4</Chip>}>
+      <Panel title="模块状态" actions={<Chip>{moduleCount} / 4</Chip>}>
         <ul className="transfers-module-state">
           {TRANSFER_MODULE_POOL.map((module) => (
             <li key={module.id}>
-              <Chip tone={state.modules[module.id] ? (module.kind === 'correct' ? 'green' : 'amber') : 'neutral'}>
+              <Chip tone={state.modules[module.id] ? 'green' : 'neutral'}>
                 {state.modules[module.id] ? '已安装' : '未安装'}
               </Chip>
               <span>{module.name}</span>
             </li>
           ))}
         </ul>
-        <p className="transfers-muted">
-          {verificationValid(state)
-            ? '两个正确模块都已安装，本次验证有机会归档。'
-            : '正确模块未装齐：验证仍可进行，但归档会被阻止。'}
-        </p>
+        <p className="transfers-muted">模块只显示实际效果与副作用；装什么、怎么组合由你判断。</p>
       </Panel>
       <Panel title="操作记录" actions={<Chip>{state.eventLog.length} 条</Chip>}>
         <EventLogList entries={state.eventLog} maxHeight={260} />
@@ -423,7 +470,8 @@ export function TransfersLevel({
         <Panel title="委托：让报价重新有代价" subtitle="客户 顾航 · 体育总监">
           <p>
             顾航的俱乐部在旧版转会窗里可以随便签人：看到身价就点，预算和工资空间永远不会报警，
-            窗口关上才发现一个人都没签成。你要从模块池里挑出正确的规则，把「转会谈判」装回去。
+            窗口关上才发现一个人都没签成。这一轮预算来自俱乐部此前的真实经营结果，失败还会继续扣钱。
+            模块池只写效果与副作用，要装哪些由你判断。
           </p>
           <ul className="transfers-objective-list">
             <li>确认转会预算与周薪空间是两本账，签约同时占用两者。</li>
@@ -497,11 +545,11 @@ export function TransfersLevel({
       {state.phase === 'repair' && (
         <Panel
           title="维修 · 从模块池里挑规则"
-          subtitle={`第 ${state.verifyAttempt} 次验证前的配置：可以自由安装 / 卸载，装错模块也会真实生效`}
+          subtitle={`第 ${state.verifyAttempt} 次验证前的配置：可以自由安装 / 卸载，每个模块都写着真实效果与副作用`}
         >
-          <Callout tone="purple" title="模块池里有两张错误卡">
-            下面 4 张卡里只有「预算与工资空间」「报价与谈判」是正确的修复。另外两张看起来很有诱惑力，
-            但会让结果真的变差：预算被砍、竞争兴趣暴涨、或者验证直接无效。
+          <Callout tone="neutral" title="怎么选模块">
+            4 张卡都没有对错标签，只有真实效果与副作用。有些卡会让预算变少、兴趣变高或让这次验证失效；
+            自己判断要装哪些、要承担什么代价。
           </Callout>
           <div className="transfers-module-grid">
             {TRANSFER_MODULE_IDS.map((id) => {
@@ -518,8 +566,8 @@ export function TransfersLevel({
                   installed={installed}
                   onToggle={() => apply(setModule(state, id, !installed))}
                   badge={
-                    <span className={`transfers-module-badge${info.kind === 'risky' ? ' is-wrong' : ' is-right'}`}>
-                      {info.kind === 'risky' ? '错误模块：装上会真实变差' : installed ? '规则生效中（归档需要它）' : '正确模块（归档需要它）'}
+                    <span className="transfers-module-badge">
+                      {installed ? '已启用：实际效果见上方说明' : '未启用：点击安装后按上方说明生效'}
                     </span>
                   }
                 />
@@ -527,14 +575,14 @@ export function TransfersLevel({
             })}
           </div>
           {!verificationValid(state) && (
-            <Callout tone="amber" title="正确模块还没有装齐" icon="⚠">
-              也可以直接开始验证，但本次结果会被判定为「验证无效」，归档按钮会被逻辑阻止；
-              到时候可以回到维修台重新配置。
+            <Callout tone="amber" title="验证配置还不完整" icon="⚠">
+              也可以直接开始验证，但本次结果会被判定为「验证无效」，归档会被阻止；
+              到时候可以回到维修台重新配置，并承担返工成本。
             </Callout>
           )}
           <div className="transfers-actions">
             <Button onClick={() => apply(startWindow(state))}>开始第 {state.verifyAttempt} 次验证（{moduleCount} 个模块）</Button>
-            <span className="transfers-muted">窗口开始后模块锁定；失败可以回到维修台重新配置。</span>
+            <span className="transfers-muted">窗口开始后模块锁定；失败可以回到维修台重新配置（每次返工 €1M）。</span>
           </div>
         </Panel>
       )}
@@ -563,9 +611,9 @@ export function TransfersLevel({
                   <Meter
                     label={state.modules.budget ? '周薪空间' : '周薪空间（规则未启用，本次不占工资）'}
                     value={state.modules.budget ? state.wage : 0}
-                    max={TRANSFER_WAGE_SPACE}
+                    max={wageLimit(state)}
                     tone={state.modules.budget ? (state.wage > 0 ? 'green' : 'amber') : 'amber'}
-                    valueLabel={`${formatWage(state.wage)} / ${formatWage(TRANSFER_WAGE_SPACE)}`}
+                    valueLabel={`${formatWage(state.wage)} / ${formatWage(wageLimit(state))}`}
                   />
                 </div>
                 <div className="transfers-stat-row">
@@ -574,13 +622,13 @@ export function TransfersLevel({
                     value={`${signedCount(state)} / ${requiredSignings(state)}`}
                     tone={isGoalMet(state) ? 'green' : 'purple'}
                   />
-                  <StatTile label="已花费预算" value={formatFee(Math.max(0, budgetLimit(state) - state.budget))} hint={`上限 ${formatFee(budgetLimit(state))}`} />
-                  <StatTile label="经纪人模块" value={state.modules.galaxy ? '已装（预算-70%）' : '未装'} tone={state.modules.galaxy ? 'red' : 'neutral'} />
-                  <StatTile label="等待模块" value={state.modules.infiniteWait ? '已装（等待 +45 兴趣）' : '未装'} tone={state.modules.infiniteWait ? 'red' : 'neutral'} />
+                  <StatTile label="已花费预算" value={formatFee(Math.max(0, budgetBase(state) - state.budget))} hint={`可用 ${formatFee(budgetLimit(state))}`} />
+                  <StatTile label="已启用模块" value={`${moduleCount} / 4`} hint="效果与副作用见右侧说明" />
+                  <StatTile label="返工成本" value={formatFee(reworkCostPaid(state))} hint={`返工 ${reworkCount(state)} 次`} tone={reworkCount(state) > 0 ? 'amber' : 'neutral'} />
                 </div>
                 {!verificationValid(state) && (
                   <Callout tone="amber" title="本次验证无效" icon="⚠">
-                    正确模块没有装齐。你仍然可以继续体验报价与竞争，但结束时不能归档，只能回到维修台重新配置。
+                    验证配置不完整。你仍然可以继续体验报价与竞争，但结束时不能归档，只能回到维修台重新配置。
                   </Callout>
                 )}
                 <ul className="transfers-player-grid">
@@ -618,8 +666,8 @@ export function TransfersLevel({
       {state.phase === 'transfer' && (
         <Panel title="迁移 · 换一家俱乐部做同样的选择" subtitle="不计分，只看判断">
           <Callout tone="neutral" title="本次真实结果">
-            第 {state.verifyAttempt} 次验证签下 {signedCount(state)} 人，已花费 {formatFee(Math.max(0, budgetLimit(state) - state.budget))}，
-            剩余工资空间 {formatWage(state.wage)}。
+            第 {state.verifyAttempt} 次验证签下 {signedCount(state)} 人，花费 {formatFee(Math.max(0, budgetBase(state) - state.budget))}，
+            剩余预算 {formatFee(state.budget)}，剩余工资空间 {formatWage(state.wage)}。
           </Callout>
           <QuizCard
             question="另一家俱乐部也有 3 名目标：一名便宜但被三家争抢，一名很贵但没人抢，一名要价一般。经理说「先等两轮，等更便宜再报」。哪一句最准确地描述他会同时面对什么？"

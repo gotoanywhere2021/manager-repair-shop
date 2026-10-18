@@ -21,10 +21,13 @@ import {
   advanceToReflection,
   answerCounterfactual,
   assignScout,
+  budgetBase,
   budgetCap,
   buildCounterfactual,
   buildMatchReport,
+  buildSquadClubPatch,
   buildSquadClubUpdate,
+  buildSquadSeasonReport,
   canSignCandidate,
   checkMicroList,
   checkRegistration,
@@ -42,7 +45,10 @@ import {
   readySquadState,
   regionKnowledge,
   restartRun,
+  requiredSignings,
   reviveSquadState,
+  reworkCostPaid,
+  reworkCount,
   rosterGroups,
   scoutAssignmentsTotal,
   setMatchDecision,
@@ -54,12 +60,14 @@ import {
   skipTactics,
   squadArchiveProblems,
   squadSummaryLines,
+  squadTotal,
   startFlow,
   startMicroTeaching,
   strictRegistration,
   wageCap,
 } from '../src/game/levels/squad/logic';
 import type { RegionId, SquadActionResult, SquadModuleId, SquadState } from '../src/game/levels/squad/logic';
+import type { ClubSigning, ClubState } from '../src/game/engine/types';
 
 afterEach(cleanup);
 
@@ -539,6 +547,8 @@ describe('赛季名单 · UI 冒烟测试', () => {
     expect(screen.getByText('维修 · 从模块池里拼出可注册的名单')).toBeTruthy();
     expect(screen.getByRole('button', { name: '安装模块：无视注册规则' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '安装模块：全权交给经纪人' })).toBeTruthy();
+    // 模块卡不再出现「正确 / 错误 / 推荐」这类答案提示。
+    expect(screen.queryByText(/错误模块|正确模块|推荐组合/)).toBeNull();
   });
 
   it('错误模块导致目标未达成时，归档被阻止并可回到维修台重新配置', () => {
@@ -557,6 +567,7 @@ describe('赛季名单 · UI 冒烟测试', () => {
     );
     expect(screen.getByText('还有目标没有达成')).toBeTruthy();
     expect(screen.getAllByText(/无视注册规则/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/俱乐部承担 €1M 返工成本（紧急处理）/).length).toBeGreaterThan(0);
     expect((screen.getByRole('button', { name: '完成委托并返回修理铺' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: '回到维修台重新配置' }));
     fireEvent.click(screen.getByRole('button', { name: '回到维修台' }));
@@ -591,7 +602,7 @@ function ignoredSummary(seed = 7): SquadState {
 
 describe('赛季名单 v2 · 模块池与错误模块', () => {
   it('模块池包含 4 个正确系统 + 2 个错误模块，错误模块有真实副作用说明', () => {
-    expect(SQUAD_STATE_VERSION).toBe(2);
+    expect(SQUAD_STATE_VERSION).toBe(3);
     expect(SQUAD_MODULE_IDS).toHaveLength(6);
     expect(SQUAD_MODULE_IDS).toEqual([
       'tactics',
@@ -825,8 +836,9 @@ describe('赛季名单 v2 · 俱乐部时间线', () => {
     expect(club.details[0]).toContain('注册检查：通过');
     expect(club.details[1]).toContain('门将 2/2');
     expect(club.details[1]).toContain('后卫 7/6');
-    expect(club.details[2]).toContain('€36.5M');
+    expect(club.details[2]).toContain('返工 0 次');
     expect(club.details[2]).toContain('阿迪力');
+    expect(club.details[2]).toContain('剩余 €5.5M');
     expect(club.details[3]).toContain('球探网络已启用');
     expect(club.nextBrief).toBeTruthy();
   });
@@ -838,5 +850,259 @@ describe('赛季名单 v2 · 俱乐部时间线', () => {
     expect(strict.enabled).toBe(true);
     expect(strict.passed).toBe(false);
     expect(strict.items.find((item) => item.id === 'youth')?.passed).toBe(false);
+  });
+});
+
+/* ==========================================================================
+   v4：跨关俱乐部状态、预算读取、返工成本与赛季报告
+   ========================================================================== */
+
+function makeClub(patch: Partial<ClubState> = {}): ClubState {
+  return {
+    name: '北港联',
+    season: '2026/27',
+    week: 2,
+    transferBudget: 30,
+    wageBudget: 150,
+    failures: 2,
+    tactics: null,
+    scoutedCandidates: [],
+    signings: [],
+    timeline: [],
+    seasonReport: null,
+    ...patch,
+  };
+}
+
+const CLUB_SIGNINGS: ClubSigning[] = [
+  { id: 'jiang-ye', name: '江野', position: '边锋', fee: 19.8, wage: 160, homegrown: true },
+  { id: 'mula-ti', name: '木拉提', position: '中卫', fee: 16, wage: 120, homegrown: false },
+];
+
+/** 用 club 直接进入名单流程第一步（模块全开、已通过微教学）。 */
+function scoutedWithClub(club: ClubState, seed = 7, fastPlay = false): SquadState {
+  let state = createSquadState({
+    mode: 'normal',
+    seed,
+    fastStart: false,
+    showcaseOptions: { seed, fastPlay, startPhase: 'verify' },
+    club,
+  });
+  state = unwrap(assignScout(state, 'east'));
+  state = unwrap(assignScout(state, 'plateau'));
+  return unwrap(confirmScout(state));
+}
+
+describe('赛季名单 v4 · 跨关俱乐部状态', () => {
+  it('读取 club 的预算、工资、返工、战术与已签约球员', () => {
+    const club = makeClub({
+      transferBudget: 30,
+      wageBudget: 150,
+      failures: 2,
+      signings: CLUB_SIGNINGS,
+      tactics: {
+        possessionShape: '4-3-3',
+        outOfPossessionShape: '4-4-2-mid',
+        fullbackDuty: 'overlap',
+        pivotDuty: 'single',
+      },
+    });
+    const state = createSquadState({
+      mode: 'normal',
+      seed: 7,
+      fastStart: false,
+      showcaseOptions: null,
+      club,
+    });
+    expect(state.inheritedSignings).toHaveLength(2);
+    expect(state.startTransferBudget).toBe(3000);
+    expect(state.startWageRoom).toBe(150);
+    expect(state.clubConnected).toBe(true);
+    expect(state.clubFailures).toBe(2);
+    expect(budgetCap(state)).toBe(3000);
+    expect(wageCap(state)).toBe(240 + 150);
+    // 战术阶段预填上一关的双形态，但比赛决策仍需自己选。
+    expect(state.tactics.possessionId).toBe('433-attack');
+    expect(state.tactics.outId).toBe('442-block');
+    expect(state.tactics.decisionId).toBeNull();
+    expect(state.tactics.confirmed).toBe(false);
+    // 已签约球员计入名单与注册校验。
+    expect(squadTotal(state)).toBe(23);
+    const registration = evaluateRegistration(state);
+    expect(registration.total).toBe(23);
+    expect(registration.youth).toBe(8);
+    expect(registration.counts).toEqual({ GK: 2, DF: 6, MF: 7, FW: 8 });
+    expect(registration.passed).toBe(true);
+    expect(requiredSignings(state)).toBe(2);
+    const fw = rosterGroups(state).find((group) => group.position === 'FW');
+    expect(fw?.players.find((player) => player.name === '江野')?.inherited).toBe(true);
+  });
+
+  it('过滤与本关 21 人或候选重复的俱乐部签约', () => {
+    const club = makeClub({
+      signings: [
+        ...CLUB_SIGNINGS,
+        { id: 'adili', name: '阿迪力', position: '后卫', fee: 12, wage: 24, homegrown: true },
+        { id: 'base-gk-1', name: '韩铮', position: '门将', fee: 5, wage: 10, homegrown: true },
+      ],
+    });
+    const state = createSquadState({ mode: 'normal', seed: 1, fastStart: false, showcaseOptions: null, club });
+    expect(state.inheritedSignings.map((signing) => signing.id)).toEqual(['jiang-ye', 'mula-ti']);
+  });
+
+  it('转会窗引援占掉名单名额，本关只需补足剩余名额', () => {
+    const club = makeClub({ signings: CLUB_SIGNINGS, transferBudget: 30, wageBudget: 150 });
+    let state = scoutedWithClub(club);
+    expect(requiredSignings(state)).toBe(2);
+    state = signAll(state, ['adili', 'zhouyuan']);
+    expect(state.signings).toHaveLength(2);
+    state = unwrap(finishSigning(state));
+    state = playTactics(state);
+    state = unwrap(checkRegistration(state));
+    expect(state.registration?.total).toBe(25);
+    expect(state.registration?.passed).toBe(true);
+    expect(state.evidence.operatedMechanic).toBe(true);
+    expect(isSquadComplete(state)).toBe(true);
+  });
+
+  it('没有 club 时使用默认预算与 4 人签约要求（展示/旧流程兼容）', () => {
+    const state = createSquadState({
+      mode: 'showcase',
+      seed: 20251018,
+      fastStart: false,
+      showcaseOptions: { seed: 20251018, fastPlay: true, startPhase: 'verify' },
+    });
+    expect(state.clubConnected).toBe(false);
+    expect(state.inheritedSignings).toHaveLength(0);
+    expect(state.startTransferBudget).toBe(4200);
+    expect(state.startWageRoom).toBe(320);
+    expect(requiredSignings(state)).toBe(2);
+    expect(budgetCap(state)).toBe(4200);
+    expect(wageCap(state)).toBe(320);
+  });
+});
+
+describe('赛季名单 v4 · 返工成本', () => {
+  it('每次回到维修台扣 €1M 紧急处理成本，最低 0', () => {
+    const club = makeClub({ transferBudget: 30, wageBudget: 150, signings: CLUB_SIGNINGS });
+    let state = scoutedWithClub(club);
+    expect(budgetCap(state)).toBe(3000);
+    state = unwrap(restartRun(state));
+    expect(reworkCount(state)).toBe(1);
+    expect(reworkCostPaid(state)).toBe(100);
+    expect(budgetCap(state)).toBe(2900);
+
+    const poor = makeClub({ transferBudget: 0.5, wageBudget: 100 });
+    let low = scoutedWithClub(poor, 9);
+    expect(budgetCap(low)).toBe(50);
+    low = unwrap(restartRun(low));
+    expect(budgetCap(low)).toBe(0);
+    expect(budgetBase(low)).toBe(0);
+    const patch = buildSquadClubPatch(low);
+    expect(patch.transferBudget).toBe(0);
+    expect(patch.addFailures).toBe(1);
+  });
+
+  it('clubPatch 提交最终名单签约（含转会窗引援）、绝对预算、返工与赛季报告', () => {
+    const club = makeClub({ transferBudget: 30, wageBudget: 150, signings: CLUB_SIGNINGS });
+    let state = scoutedWithClub(club);
+    state = signAll(state, ['adili', 'zhouyuan']);
+    state = unwrap(finishSigning(state));
+    state = playTactics(state);
+    state = unwrap(checkRegistration(state));
+    const patch = buildSquadClubPatch(state);
+    expect(patch.signings).toHaveLength(4);
+    expect(patch.signings?.map((signing) => signing.name)).toEqual(['江野', '木拉提', '阿迪力', '周原']);
+    expect(patch.transferBudget).toBe(Math.round(((3000 - 1200 - 950) / 100) * 10) / 10);
+    expect(patch.wageBudget).toBe(150 - 24 - 16);
+    expect(patch.addFailures).toBe(0);
+    const report = buildSquadSeasonReport(state);
+    expect(report.headline).toContain('25/25');
+    expect(report.headline).toContain('9/8');
+    expect(report.details).toHaveLength(4);
+    expect(report.details.join('')).toContain('江野');
+    expect(report.details.join('')).toContain('阿迪力');
+    expect(patch.seasonReport?.headline).toBe(report.headline);
+  });
+
+  it('clubUpdate 写入返工、跨关引援与预算变化', () => {
+    const club = makeClub({ transferBudget: 30, wageBudget: 150, failures: 3, signings: CLUB_SIGNINGS });
+    let state = scoutedWithClub(club);
+    state = unwrap(restartRun(state));
+    expect(state.restarts).toBe(1);
+    const update = buildSquadClubUpdate(state);
+    expect(update.details.join('')).toContain('跨关引援');
+    expect(update.details.join('')).toContain('返工 1 次');
+    expect(update.details.join('')).toContain('江野');
+    expect(update.details.join('')).toContain('€1M');
+  });
+});
+
+describe('赛季名单 v4 · UI 跨关与无答案提示', () => {
+  it('页面显示俱乐部历史返工、转会窗引援与 €1M 成本提示', () => {
+    const club = makeClub({
+      signings: CLUB_SIGNINGS,
+      transferBudget: 30,
+      wageBudget: 150,
+      failures: 2,
+      tactics: {
+        possessionShape: '4-3-3',
+        outOfPossessionShape: '4-4-2-mid',
+        fullbackDuty: 'overlap',
+        pivotDuty: 'single',
+      },
+    });
+    const state = scoutedWithClub(club);
+    render(
+      createElement(SquadLevel, {
+        level: getLevel('squad'),
+        mode: 'normal',
+        fastStart: false,
+        showcaseOptions: null,
+        club,
+        savedState: state,
+        onSaveState: vi.fn(),
+        onComplete: vi.fn(),
+        onExit: vi.fn(),
+      }),
+    );
+    expect(screen.getByText('俱乐部状态')).toBeTruthy();
+    expect(screen.getByText('俱乐部历史返工')).toBeTruthy();
+    expect(screen.getAllByText('江野').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/€1M/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/错误模块|正确模块|推荐组合/)).toBeNull();
+  });
+
+  it('completes 时 onComplete 带 clubPatch、clubUpdate 与 seasonReport', () => {
+    const club = makeClub({ signings: CLUB_SIGNINGS, transferBudget: 30, wageBudget: 150 });
+    const onComplete = vi.fn();
+    let saved = scoutedWithClub(club, 2024);
+    saved = signAll(saved, ['adili', 'zhouyuan']);
+    saved = unwrap(finishSigning(saved));
+    saved = playTactics(saved);
+    saved = unwrap(checkRegistration(saved));
+    saved = unwrap(advanceToReflection(saved));
+    render(
+      createElement(SquadLevel, {
+        level: getLevel('squad'),
+        mode: 'normal',
+        fastStart: false,
+        showcaseOptions: null,
+        club,
+        savedState: saved,
+        onSaveState: vi.fn(),
+        onComplete,
+        onExit: vi.fn(),
+      }),
+    );
+    fireEvent.click(screen.getByRole('radio', { name: /因为每签一个人都在同时占用/ }));
+    fireEvent.click(screen.getByRole('button', { name: '确认这条解释并归档' }));
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    const payload = onComplete.mock.calls[0]?.[0] as {
+      clubPatch?: { signings: unknown[]; transferBudget: number; addFailures: number; seasonReport?: unknown };
+    };
+    expect(payload.clubPatch?.signings).toHaveLength(4);
+    expect(payload.clubPatch?.addFailures).toBe(0);
+    expect(payload.clubPatch?.seasonReport).toBeTruthy();
   });
 });

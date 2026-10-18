@@ -1,5 +1,14 @@
 import { LEVEL_ORDER, isLevelId, isMechanismId } from '../game/levels';
-import type { LevelId, MechanismId } from '../game/engine/types';
+import type {
+  ClubScoutCandidate,
+  ClubSeasonReport,
+  ClubSigning,
+  ClubState,
+  ClubTactics,
+  ClubTimelineEntry,
+  LevelId,
+  MechanismId,
+} from '../game/engine/types';
 
 /** localStorage 读写与坏档回退。所有结构都显式校验，损坏数据不会让应用崩溃。 */
 
@@ -16,25 +25,24 @@ export interface Progress {
   /** 每关可恢复的组件状态，由关卡自行定义结构。 */
   levelStates: Partial<Record<LevelId, unknown>>;
   completedAt: Partial<Record<LevelId, string>>;
-  /** 俱乐部档案：赛季名称与真实维修结果时间线。 */
-  club: ClubProgress;
+  /** 俱乐部档案：赛季、真实资源、跨关产出与维修时间线。 */
+  club: ClubState;
 }
 
-export interface ClubTimelineEntry {
-  levelId: LevelId;
-  headline: string;
-  details: string[];
-  at: string;
-}
-
-export interface ClubProgress {
-  name: string;
-  season: string;
-  timeline: ClubTimelineEntry[];
-}
-
-export function getDefaultClub(): ClubProgress {
-  return { name: '北港联', season: '2026/27', timeline: [] };
+export function getDefaultClub(): ClubState {
+  return {
+    name: '北港联',
+    season: '2026/27',
+    week: 0,
+    transferBudget: 45,
+    wageBudget: 350,
+    failures: 0,
+    tactics: null,
+    scoutedCandidates: [],
+    signings: [],
+    timeline: [],
+    seasonReport: null,
+  };
 }
 
 export interface Settings {
@@ -139,7 +147,78 @@ function sanitizeCompletedAt(value: unknown): Partial<Record<LevelId, string>> {
   return result;
 }
 
-function sanitizeClub(value: unknown): ClubProgress {
+function sanitizeClubTactics(value: unknown): ClubTactics | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const keys = ['possessionShape', 'outOfPossessionShape', 'fullbackDuty', 'pivotDuty'] as const;
+  for (const key of keys) {
+    if (typeof raw[key] !== 'string' || !raw[key].trim()) return null;
+  }
+  return {
+    possessionShape: (raw.possessionShape as string).slice(0, 24),
+    outOfPossessionShape: (raw.outOfPossessionShape as string).slice(0, 24),
+    fullbackDuty: (raw.fullbackDuty as string).slice(0, 24),
+    pivotDuty: (raw.pivotDuty as string).slice(0, 24),
+  };
+}
+
+function sanitizeScoutedCandidates(value: unknown): ClubScoutCandidate[] {
+  if (!Array.isArray(value)) return [];
+  const result: ClubScoutCandidate[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const raw = item as Record<string, unknown>;
+    if (typeof raw.id !== 'string' || typeof raw.name !== 'string') continue;
+    result.push({
+      id: raw.id.slice(0, 40),
+      name: raw.name.slice(0, 40),
+      position: typeof raw.position === 'string' ? raw.position.slice(0, 20) : '未知',
+      region: typeof raw.region === 'string' ? raw.region.slice(0, 30) : '未知',
+      knowledge: typeof raw.knowledge === 'number' ? Math.min(100, Math.max(0, Math.round(raw.knowledge))) : 0,
+    });
+    if (result.length >= 8) break;
+  }
+  return result;
+}
+
+function sanitizeSignings(value: unknown): ClubSigning[] {
+  if (!Array.isArray(value)) return [];
+  const result: ClubSigning[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const raw = item as Record<string, unknown>;
+    if (typeof raw.id !== 'string' || typeof raw.name !== 'string') continue;
+    result.push({
+      id: raw.id.slice(0, 40),
+      name: raw.name.slice(0, 40),
+      position: typeof raw.position === 'string' ? raw.position.slice(0, 20) : '未知',
+      fee: typeof raw.fee === 'number' && Number.isFinite(raw.fee) ? Math.max(0, raw.fee) : 0,
+      wage: typeof raw.wage === 'number' && Number.isFinite(raw.wage) ? Math.max(0, raw.wage) : 0,
+      homegrown: raw.homegrown === true,
+    });
+    if (result.length >= 8) break;
+  }
+  return result;
+}
+
+function sanitizeSeasonReport(value: unknown): ClubSeasonReport | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.headline !== 'string' || !raw.headline.trim()) return null;
+  return {
+    headline: raw.headline.slice(0, 160),
+    details: Array.isArray(raw.details)
+      ? raw.details.filter((line): line is string => typeof line === 'string' && line.trim().length > 0).slice(0, 6)
+      : [],
+  };
+}
+
+function finiteOr(value: unknown, fallback: number, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value * 10) / 10));
+}
+
+function sanitizeClub(value: unknown): ClubState {
   const fallback = getDefaultClub();
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fallback;
   const candidate = value as Record<string, unknown>;
@@ -162,7 +241,15 @@ function sanitizeClub(value: unknown): ClubProgress {
   return {
     name: typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name.slice(0, 24) : fallback.name,
     season: typeof candidate.season === 'string' && candidate.season.trim() ? candidate.season.slice(0, 16) : fallback.season,
+    week: finiteOr(candidate.week, 0, 0, 99),
+    transferBudget: finiteOr(candidate.transferBudget, fallback.transferBudget, 0, 500),
+    wageBudget: finiteOr(candidate.wageBudget, fallback.wageBudget, 0, 2000),
+    failures: finiteOr(candidate.failures, 0, 0, 99),
+    tactics: sanitizeClubTactics(candidate.tactics),
+    scoutedCandidates: sanitizeScoutedCandidates(candidate.scoutedCandidates),
+    signings: sanitizeSignings(candidate.signings),
     timeline: timeline.slice(-8),
+    seasonReport: sanitizeSeasonReport(candidate.seasonReport),
   };
 }
 

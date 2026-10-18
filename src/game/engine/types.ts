@@ -113,6 +113,8 @@ export interface LevelCompletion {
   summary: string[];
   /** 真实赛季结果，用于主页俱乐部办公室的时间线与下一份委托。 */
   clubUpdate?: ClubUpdate;
+  /** 跨关俱乐部状态增量：预算、战术、签约、返工次数等真实数据。 */
+  clubPatch?: ClubPatch;
 }
 
 /** 关卡完成后写入俱乐部档案的真实结果，不包含虚构评分。 */
@@ -122,12 +124,86 @@ export interface ClubUpdate {
   nextBrief?: string;
 }
 
+/* ------------------------------------------------------------------ *
+ * 跨关俱乐部状态：四关共享的真实资源与产出。
+ * 所有字段都来自玩家操作或关卡规则，不包含虚构评分。
+ * ------------------------------------------------------------------ */
+
+export interface ClubTactics {
+  possessionShape: string;
+  outOfPossessionShape: string;
+  fullbackDuty: string;
+  pivotDuty: string;
+}
+
+export interface ClubScoutCandidate {
+  id: string;
+  name: string;
+  position: string;
+  region: string;
+  knowledge: number;
+}
+
+export interface ClubSigning {
+  id: string;
+  name: string;
+  position: string;
+  fee: number;
+  wage: number;
+  homegrown: boolean;
+}
+
+export interface ClubTimelineEntry {
+  levelId: LevelId;
+  headline: string;
+  details: string[];
+  at: string;
+}
+
+export interface ClubSeasonReport {
+  headline: string;
+  details: string[];
+}
+
+export interface ClubState {
+  name: string;
+  season: string;
+  /** 已完成周数（每完成一关 +1）。 */
+  week: number;
+  /** 剩余转会预算（百万欧）。 */
+  transferBudget: number;
+  /** 周薪空间（千欧/周）。 */
+  wageBudget: number;
+  /** 返工次数：失败验证的真实代价，会累计进赛季报告。 */
+  failures: number;
+  tactics: ClubTactics | null;
+  scoutedCandidates: ClubScoutCandidate[];
+  signings: ClubSigning[];
+  timeline: ClubTimelineEntry[];
+  seasonReport: ClubSeasonReport | null;
+}
+
+/** 关卡提交给俱乐部的跨关增量；未提供的字段保持不变。 */
+export interface ClubPatch {
+  tactics?: ClubTactics;
+  scoutedCandidates?: ClubScoutCandidate[];
+  signings?: ClubSigning[];
+  /** 绝对剩余值，由关卡根据失败成本计算后提交。 */
+  transferBudget?: number;
+  wageBudget?: number;
+  /** 本次完成前累计的返工次数（关卡内记录）。 */
+  addFailures?: number;
+  seasonReport?: ClubSeasonReport;
+}
+
 /** 每个关卡组件统一接收的 props。 */
 export interface LevelScreenProps {
   level: LevelDefinition;
   mode: GameMode;
   fastStart: boolean;
   showcaseOptions: ShowcaseOptions | null;
+  /** 正常模式下的俱乐部跨关状态；展示模式为 undefined。 */
+  club?: ClubState;
   /** 上次保存的关卡状态（未知结构，由关卡自己校验）。 */
   savedState: unknown;
   /** 关卡状态变化时调用；App 负责写入 localStorage。 */

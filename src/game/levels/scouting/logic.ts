@@ -14,6 +14,8 @@ import { recordEvent } from '../../engine/events';
 import type { RngState } from '../../engine/rng';
 import { createRng, isRngState, nextInt, normalizeSeed, reviveRng } from '../../engine/rng';
 import type {
+  ClubPatch,
+  ClubScoutCandidate,
   ClubUpdate,
   EventLogEntry,
   EventState,
@@ -384,7 +386,7 @@ export interface ScoutingRoundRecord {
 }
 
 export interface ScoutingState {
-  version: 2;
+  version: 3;
   phase: LevelPhase;
   mode: GameMode;
   fastPlay: boolean;
@@ -401,6 +403,10 @@ export interface ScoutingState {
   loadout: ScoutingLoadout;
   /** 第几次验证（0 表示还没重试过）。 */
   attempts: number;
+  /** 进入本关时俱乐部剩余转会预算（百万欧）；展示模式为默认 45。 */
+  budget: number;
+  /** 本关验证未达成后的返工次数，每次扣 €0.5M，完成时另扣 €1M 球探网络维护费。 */
+  failureCount: number;
   fault: { inspected: string[]; picked: string | null; done: boolean };
   diagnose: { resolved: boolean };
   selectedCandidateId: string | null;
@@ -414,6 +420,35 @@ export interface ScoutingInitOptions {
   mode: GameMode;
   fastStart: boolean;
   showcaseOptions: ShowcaseOptions | null;
+  /** 正常模式由 props.club.transferBudget 传入；不传或展示模式用默认 45。 */
+  startingBudget?: number;
+}
+
+/** 俱乐部默认转会预算（百万欧）。 */
+export const DEFAULT_TRANSFER_BUDGET = 45;
+/** 每次验证未达成后的返工成本（百万欧）。 */
+export const RETRY_COST_MILLIONS = 0.5;
+/** 完成球探网络时的一次性维护费（百万欧）。 */
+export const SCOUT_NETWORK_FEE_MILLIONS = 1;
+
+export function normalizeBudget(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_TRANSFER_BUDGET;
+  return Math.max(0, Math.round(value * 10) / 10);
+}
+
+/** 扣掉本关返工成本后、尚未计入维护费的预算。 */
+export function budgetAfterRetries(state: Pick<ScoutingState, 'budget' | 'failureCount'>): number {
+  return Math.max(0, Math.round((state.budget - state.failureCount * RETRY_COST_MILLIONS) * 10) / 10);
+}
+
+/** 本关结束时可提交给俱乐部的剩余转会预算（再扣 €1M 球探网络维护费，不会为负）。 */
+export function remainingBudget(state: Pick<ScoutingState, 'budget' | 'failureCount'>): number {
+  return Math.max(0, Math.round((budgetAfterRetries(state) - SCOUT_NETWORK_FEE_MILLIONS) * 10) / 10);
+}
+
+/** 预算展示：整数不带小数，返工扣款为 .5 时保留一位。 */
+export function formatBudgetM(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 function initialKnowledge(): Record<RegionId, number> {
@@ -484,8 +519,8 @@ export function evaluateScoutingVerification(state: ScoutingState): ScoutingVeri
   const targets: ScoutingTargetCheck[] = [
     {
       id: 'modules',
-      label: '维修模块正确',
-      requirement: '安装有限球探 + 知识度报告，且没有错误模块',
+      label: '考察结构完整',
+      requirement: '球探派遣与报告设置都已就位',
       actual: installedNames.length > 0 ? `已安装：${installedNames.join('、')}` : '没有安装任何模块',
       met: modulesCorrect,
     },
@@ -622,7 +657,7 @@ export function startRepair(state: ScoutingState): ScoutingState {
     label: '开始维修：模块池自由配置',
     before: { phase: 'diagnose' },
     after: { phase: 'repair' },
-    note: '有限球探负责派人，知识度报告负责把信息变清楚；错误模块也能装，但要承担真实副作用。',
+    note: '有限球探负责派人，知识度报告负责把信息变清楚；不同模块组合会改变知识度与报告质量。',
   });
 }
 
@@ -640,7 +675,7 @@ export function installScoutingModule(state: ScoutingState, id: ScoutingModuleId
     label: `安装模块：${module.name}`,
     before: { slot: module.slot, installed: previous ?? '空' },
     after: { slot: module.slot, installed: module.name, effect: module.effect },
-    delta: module.correct ? '正确模块' : '错误模块（有副作用）',
+    delta: `模块已安装${module.correct ? '' : '（注意副作用）'}`,
     note: module.sideEffect,
   });
 }
@@ -776,11 +811,12 @@ export function selectCandidate(state: ScoutingState, candidateId: string): Scou
   });
 }
 
-/** 验证未达成后回到维修台：清空本轮派遣与选择，保留故障证据与模块配置以便调整。 */
+/** 验证未达成后回到维修台：清空本轮派遣与选择，保留故障证据与模块配置；俱乐部扣 €0.5M 考察成本。 */
 export function retryVerification(state: ScoutingState): ScoutingState {
   if (state.phase !== 'verify' || !isVerificationDone(state)) return state;
   const verification = evaluateScoutingVerification(state);
   if (verification.passed) return state;
+  const costBefore = budgetAfterRetries(state);
   const next: ScoutingState = {
     ...state,
     phase: 'repair',
@@ -790,16 +826,20 @@ export function retryVerification(state: ScoutingState): ScoutingState {
     history: [],
     selectedCandidateId: null,
     attempts: state.attempts + 1,
+    failureCount: state.failureCount + 1,
   };
+  const costAfter = budgetAfterRetries(next);
   return withEvent(next, 'repair', {
     action: 'retry-verification',
     label: '验证未达成：回到维修台重新配置',
-    before: { phase: 'verify', round: state.round, covered: verification.covered.length },
-    after: { phase: 'repair', attempts: next.attempts },
-    delta: `未达成 ${verification.failed.length} 项目标`,
+    before: { phase: 'verify', round: state.round, covered: verification.covered.length, budget: costBefore },
+    after: { phase: 'repair', attempts: next.attempts, budget: costAfter },
+    delta: `未达成 ${verification.failed.length} 项目标 · 扣 €${formatBudgetM(RETRY_COST_MILLIONS)}M`,
     note: `未达成：${verification.failed
       .map((target) => `${target.label}（${target.actual}，要求 ${target.requirement}）`)
-      .join('；')}。本轮派遣成绩与选择已清空。`,
+      .join('；')}。俱乐部承担 €${formatBudgetM(RETRY_COST_MILLIONS)}M 返工成本（考察费用），转会预算 €${formatBudgetM(
+      costBefore,
+    )}M → €${formatBudgetM(costAfter)}M（完成时另扣 €${formatBudgetM(SCOUT_NETWORK_FEE_MILLIONS)}M 球探网络维护费）；本轮派遣成绩与选择已清空。`,
   });
 }
 
@@ -986,6 +1026,8 @@ export function buildClubUpdate(state: ScoutingState): ClubUpdate {
   const covered = coveredRegions(state);
   const coverageText = covered.map((region) => `${regionName(region)} ${state.knowledge[region]}`).join('、') || '没有区域';
   const rangeText = selectedReport?.range ? `${selectedReport.range.low}–${selectedReport.range.high}` : '未知';
+  const budget = remainingBudget(state);
+  const retryCost = state.failureCount * RETRY_COST_MILLIONS;
   return {
     headline: `球探网络上线索：${covered.length} 个区域有报告，${
       selected ? `${selected.name} 以「${selectedReport ? precisionLabel(selectedReport.precision) : '未知'}」报告入选` : '候选名单待定'
@@ -994,17 +1036,70 @@ export function buildClubUpdate(state: ScoutingState): ClubUpdate {
       `派遣记录：${state.round} 轮 × ${moduleScoutsPerRound(state)} 名球探，实际考察 ${coverageText}；每次考察 +${moduleKnowledgeGain(state)} 知识度。`,
       `候选报告：${selected ? `${selected.name}（${selected.position}，${regionName(selected.region)}）区间 ${rangeText}，精度「${selectedReport ? precisionLabel(selectedReport.precision) : '未知'}」` : '还没有选择候选'}。`,
       `真实能力（选完才揭晓）：${selected ? `${selected.name} 总评 ${trueOverall(selected)}` : '未知'}；未考察区域保持「未知」。`,
-      `验证目标全部达成：至少 ${SCOUTING_TARGETS.coverageMin} 个区域知识度 ≥ ${SCOUTING_TARGETS.knowledgeThreshold}、候选报告精度 ≥「${precisionLabel(SCOUTING_TARGETS.reportPrecisionMin)}」。`,
+      `成本：返工 ${state.failureCount} 次，俱乐部承担 €${formatBudgetM(
+        retryCost,
+      )}M 考察成本 + €${formatBudgetM(SCOUT_NETWORK_FEE_MILLIONS)}M 球探网络维护费，剩余转会预算 €${formatBudgetM(
+        budget,
+      )}M；验证目标全部达成。`,
     ],
     nextBrief: '转会窗即将开启：体育总监顾航需要同时控制预算、工资空间与报价竞争。',
   };
 }
 
-export function buildCompletionResult(state: ScoutingState): { evidence: Evidence; summary: string[]; clubUpdate: ClubUpdate } {
+/**
+ * 提交给俱乐部的球探候选：按报告价值排序（精度 > 知识度 > 真实总评），取前 3 名。
+ * 只包含真实考察得到的知识度，不暴露未考察区域的任何信息。
+ */
+export function scoutedCandidatesPatch(state: ScoutingState): ClubScoutCandidate[] {
+  return state.candidateOrder
+    .map((id) => findCandidate(id))
+    .filter((candidate): candidate is ScoutCandidate => candidate !== null)
+    .map((candidate) => {
+      const knowledge = state.knowledge[candidate.region];
+      return {
+        candidate,
+        knowledge,
+        report: candidateReportWithModules(candidate, knowledge, state.loadout),
+      };
+    })
+    .sort(
+      (a, b) =>
+        precisionRank(b.report.precision) - precisionRank(a.report.precision) ||
+        b.knowledge - a.knowledge ||
+        trueOverall(b.candidate) - trueOverall(a.candidate),
+    )
+    .slice(0, 3)
+    .map(({ candidate, knowledge }) => ({
+      id: candidate.id,
+      name: candidate.name,
+      position: candidate.position,
+      region: candidate.region,
+      knowledge,
+    }));
+}
+
+/** 正常模式完成时提交给俱乐部的真实增量；展示模式不写正式进度。 */
+export function buildClubPatch(state: ScoutingState): ClubPatch | null {
+  if (state.mode !== 'normal') return null;
+  return {
+    scoutedCandidates: scoutedCandidatesPatch(state),
+    transferBudget: remainingBudget(state),
+    addFailures: state.failureCount,
+  };
+}
+
+export function buildCompletionResult(state: ScoutingState): {
+  evidence: Evidence;
+  summary: string[];
+  clubUpdate: ClubUpdate;
+  clubPatch?: ClubPatch;
+} {
+  const clubPatch = buildClubPatch(state);
   return {
     evidence: { ...state.evidence },
     summary: buildArchiveSummary(state),
     clubUpdate: buildClubUpdate(state),
+    ...(clubPatch ? { clubPatch } : {}),
   };
 }
 
@@ -1092,7 +1187,7 @@ function createBaseState(options: ScoutingInitOptions, seed: number, phase: Leve
   const normalizedSeed = normalizeSeed(seed);
   const shuffled = shuffleCandidates(normalizedSeed);
   return {
-    version: 2,
+    version: 3,
     phase,
     mode: options.mode,
     fastPlay,
@@ -1106,6 +1201,8 @@ function createBaseState(options: ScoutingInitOptions, seed: number, phase: Leve
     history: [],
     loadout: { dispatch: null, report: null },
     attempts: 0,
+    budget: normalizeBudget(options.startingBudget),
+    failureCount: 0,
     fault: { inspected: [], picked: null, done: false },
     diagnose: { resolved: false },
     selectedCandidateId: null,
@@ -1220,10 +1317,10 @@ function isSelectedId(value: unknown): value is string | null {
   return value === null || (typeof value === 'string' && findCandidate(value) !== null);
 }
 
-/** 校验并恢复存档（只接受 v2 结构；旧版存档安全回退）。 */
+/** 校验并恢复存档（只接受 v3 结构；旧版存档安全回退）。 */
 export function reviveScoutingState(raw: unknown, options: ScoutingInitOptions): ScoutingState | null {
   if (!isObject(raw)) return null;
-  if (raw.version !== 2) return null;
+  if (raw.version !== 3) return null;
   if (!isPhase(raw.phase)) return null;
   const mode = raw.mode;
   if (mode !== 'normal' && mode !== 'showcase') return null;
@@ -1241,6 +1338,8 @@ export function reviveScoutingState(raw: unknown, options: ScoutingInitOptions):
   if (new Set(raw.dispatches).size !== raw.dispatches.length) return null;
   if (!isLoadout(raw.loadout)) return null;
   if (!isFiniteNumber(raw.attempts) || raw.attempts < 0) return null;
+  if (!isFiniteNumber(raw.budget) || raw.budget < 0) return null;
+  if (!isFiniteNumber(raw.failureCount) || raw.failureCount < 0) return null;
   const loadout = raw.loadout as ScoutingLoadout;
   const expectedScouts = loadout.dispatch === 'limited-scouts' ? SCOUTS_PER_ROUND : loadout.dispatch === 'wide-net' ? WIDE_NET_SCOUTS : FALLBACK_SCOUTS;
   if (raw.dispatches.length > expectedScouts) return null;
@@ -1267,7 +1366,7 @@ export function reviveScoutingState(raw: unknown, options: ScoutingInitOptions):
   if (raw.phase === 'repair' && (raw.round !== 0 || raw.selectedCandidateId !== null || raw.dispatches.length > 0)) return null;
 
   return {
-    version: 2,
+    version: 3,
     phase: raw.phase,
     mode,
     fastPlay: raw.fastPlay,
@@ -1287,6 +1386,8 @@ export function reviveScoutingState(raw: unknown, options: ScoutingInitOptions):
     })),
     loadout: { dispatch: loadout.dispatch, report: loadout.report },
     attempts: Math.floor(raw.attempts),
+    budget: normalizeBudget(raw.budget),
+    failureCount: Math.floor(raw.failureCount),
     fault: {
       inspected: [...(fault.inspected as string[])],
       picked: fault.picked as string | null,

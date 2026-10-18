@@ -8,7 +8,9 @@ import {
   GALAXY_INTEREST_PENALTY,
   INFINITE_WAIT_EXTRA_INTEREST,
   INFINITE_WAIT_PRICE_CUT,
+  REWORK_COST,
   RIVAL_WAIT,
+  SCOUT_TARGET_ECONOMICS,
   TRANSFER_BUDGET,
   TRANSFER_MODULE_POOL,
   TRANSFER_QUIZ_CORRECT_ID,
@@ -17,8 +19,10 @@ import {
   advanceToTransfer,
   answerTransfer,
   archiveProblems,
-  buildTransfersClubUpdate,
+  budgetBase,
   budgetLimit,
+  buildTransfersClubPatch,
+  buildTransfersClubUpdate,
   canAdvanceToTransfer,
   canOffer,
   closeWindow,
@@ -35,7 +39,10 @@ import {
   requiredSignings,
   resolveDiagnosis,
   reviveTransfersState,
+  reworkCostPaid,
+  reworkCount,
   roundLimit,
+  scoutTargetRivalInterest,
   setModule,
   signedCount,
   signedPlayers,
@@ -47,6 +54,25 @@ import {
   waitTarget,
 } from '../src/game/levels/transfers/logic';
 import type { TransferModuleId, TransfersState } from '../src/game/levels/transfers/logic';
+import type { ClubScoutCandidate, ClubState } from '../src/game/engine/types';
+
+/** 构造一个跨关俱乐部状态；只填测试需要的字段。 */
+function makeClub(patch: Partial<ClubState> = {}): ClubState {
+  return {
+    name: '北港联',
+    season: '2026/27',
+    week: 1,
+    transferBudget: 45,
+    wageBudget: 350,
+    failures: 0,
+    tactics: null,
+    scoutedCandidates: [],
+    signings: [],
+    timeline: [],
+    seasonReport: null,
+    ...patch,
+  };
+}
 
 afterEach(cleanup);
 
@@ -66,8 +92,12 @@ function withPlayer(state: TransfersState, id: string, patch: Partial<TransfersS
 }
 
 /** 从故障试玩、诊断一路走到维修阶段，并按给定配置安装模块。 */
-function reachRepair(seed: number, modules: Partial<Record<TransferModuleId, boolean>> = {}): TransfersState {
-  let state = createTransfersState({ mode: 'normal', seed, fastStart: true, showcaseOptions: null });
+function reachRepair(
+  seed: number,
+  modules: Partial<Record<TransferModuleId, boolean>> = {},
+  club?: ClubState,
+): TransfersState {
+  let state = createTransfersState({ mode: 'normal', seed, fastStart: true, showcaseOptions: null, club });
   state = unwrap(directSign(state, 'jiang-ye'));
   state = unwrap(finishFaultPlay(state));
   state = unwrap(resolveDiagnosis(state));
@@ -85,10 +115,13 @@ function reachWindow(seed = 7): TransfersState {
 describe('转会窗 · 初始状态与种子', () => {
   it('初始为接单阶段，预算、工资、球员都来自常量', () => {
     const state = createTransfersState({ mode: 'normal', seed: 123, fastStart: false, showcaseOptions: null });
-    expect(state.version).toBe(2);
+    expect(state.version).toBe(4);
     expect(state.phase).toBe('commission');
     expect(state.budget).toBe(TRANSFER_BUDGET);
     expect(state.wage).toBe(TRANSFER_WAGE_SPACE);
+    expect(state.startTransferBudget).toBe(TRANSFER_BUDGET);
+    expect(state.startWageBudget).toBe(TRANSFER_WAGE_SPACE);
+    expect(state.clubFailures).toBe(0);
     expect(state.verifyAttempt).toBe(1);
     expect(state.players).toHaveLength(3);
     expect(state.round).toBe(1);
@@ -304,7 +337,7 @@ describe('转会窗 · 错误模块真实改变结果', () => {
     expect(signed.budget).toBe(TRANSFER_BUDGET);
     expect(signed.wage).toBe(TRANSFER_WAGE_SPACE);
     const closed = unwrap(closeWindow(signed));
-    expect(archiveProblems(closed).some((problem) => problem.includes('预算与工资空间'))).toBe(true);
+    expect(archiveProblems(closed).some((problem) => problem.includes('验证配置不完整'))).toBe(true);
     expect(canAdvanceToTransfer(closed)).toBe(false);
     expect(advanceToTransfer(closed).ok).toBe(false);
 
@@ -315,7 +348,7 @@ describe('转会窗 · 错误模块真实改变结果', () => {
     expect(playerOf(signedAnyway, 'jiang-ye').status).toBe('signed');
     expect(playerOf(signedAnyway, 'jiang-ye').rivalInterest).toBe(95);
     const closed2 = unwrap(closeWindow(signedAnyway));
-    expect(archiveProblems(closed2).some((problem) => problem.includes('报价与谈判'))).toBe(true);
+    expect(archiveProblems(closed2).some((problem) => problem.includes('验证配置不完整'))).toBe(true);
   });
 
   it('装错模块 → 未达成 → 回到维修台重新配置 → 换模块后可以完成', () => {
@@ -329,7 +362,9 @@ describe('转会窗 · 错误模块真实改变结果', () => {
     expect(state.phase).toBe('repair');
     expect(state.verifyAttempt).toBe(2);
     expect(state.windowStarted).toBe(false);
-    expect(state.budget).toBe(TRANSFER_BUDGET);
+    // 返工成本 €1M：预算基数 4500 → 4400，再套用「砸巨星」的 30%。
+    expect(state.budget).toBe(1320);
+    expect(state.startTransferBudget).toBe(TRANSFER_BUDGET);
     expect(signedCount(state)).toBe(0);
     expect(state.evidence.experiencedFault).toBe(true);
     expect(state.evidence.operatedMechanic).toBe(false);
@@ -339,7 +374,7 @@ describe('转会窗 · 错误模块真实改变结果', () => {
     // 卸载错误模块，重新开始第二次验证。
     state = unwrap(setModule(state, 'galaxy', false));
     state = unwrap(startWindow(state));
-    expect(state.budget).toBe(TRANSFER_BUDGET);
+    expect(state.budget).toBe(TRANSFER_BUDGET - REWORK_COST);
     expect(state.verifyAttempt).toBe(2);
     state = unwrap(makeOffer(state, 'jiang-ye', 'low'));
     state = unwrap(makeOffer(state, 'mula-ti', 'normal'));
@@ -554,7 +589,7 @@ describe('转会窗 · 证据标记与俱乐部时间线', () => {
     expect(club.headline).toContain('签下 2/3');
     expect(club.headline).toContain('€');
     expect(club.headline).toContain('花费');
-    expect(club.details).toHaveLength(4);
+    expect(club.details).toHaveLength(5);
     expect(club.details.join('')).toContain(`${Math.max(0, TRANSFER_WAGE_SPACE - state.wage)}k/周`);
     expect(club.details.join('')).toContain('陈砚');
     expect(club.details.join('')).toContain('预算与工资空间');
@@ -608,9 +643,15 @@ describe('转会窗 · UI 冒烟测试', () => {
     fireEvent.click(screen.getByRole('button', { name: '提交判断' }));
     expect(screen.getByText('归档 · 这次维修留下了什么')).toBeTruthy();
     expect(onComplete).toHaveBeenCalledTimes(1);
-    const payload = onComplete.mock.calls[0]?.[0] as { clubUpdate?: { headline: string; details: string[] } };
+    const payload = onComplete.mock.calls[0]?.[0] as {
+      clubUpdate?: { headline: string; details: string[] };
+      clubPatch?: { signings: unknown[]; transferBudget: number; wageBudget: number; addFailures: number };
+    };
     expect(payload.clubUpdate?.headline).toContain('签下 2/3');
-    expect(payload.clubUpdate?.details).toHaveLength(4);
+    expect(payload.clubUpdate?.details).toHaveLength(5);
+    expect(payload.clubPatch?.signings).toHaveLength(2);
+    expect(payload.clubPatch?.transferBudget).toBeGreaterThanOrEqual(0);
+    expect(payload.clubPatch?.addFailures).toBe(0);
     fireEvent.click(screen.getByRole('button', { name: '完成委托并返回修理铺' }));
     expect(onComplete).toHaveBeenCalledTimes(1);
     expect(onExit).toHaveBeenCalledTimes(1);
@@ -637,6 +678,8 @@ describe('转会窗 · UI 冒烟测试', () => {
     expect(screen.getByText('维修 · 从模块池里挑规则')).toBeTruthy();
     expect(screen.getByRole('button', { name: '安装模块：清空预算砸巨星' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '安装模块：无限等待' })).toBeTruthy();
+    // 模块 card 里不再出现「正确 / 错误 / 推荐」这类答案提示。
+    expect(screen.queryByText(/错误模块|正确模块|推荐组合/)).toBeNull();
   });
 
   it('错误模块导致未达成时显示具体原因，并可点击回到维修台重新配置', () => {
@@ -657,9 +700,253 @@ describe('转会窗 · UI 冒烟测试', () => {
     );
     expect(screen.getByText('还不能归档')).toBeTruthy();
     expect(screen.getByText(/签约人数不足/)).toBeTruthy();
+    expect(screen.getAllByText(/俱乐部承担 €1M 返工成本（谈判\/经纪），转会预算将受影响/).length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: '进入迁移题' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '回到维修台重新配置' }));
     expect(screen.getByText('维修 · 从模块池里挑规则')).toBeTruthy();
     expect(screen.getByRole('button', { name: '卸载模块：清空预算砸巨星' })).toBeTruthy();
+  });
+});
+
+/* ==========================================================================
+   v4：跨关俱乐部预算、返工成本与跨关提交
+   ========================================================================== */
+
+describe('转会窗 v4 · 跨关俱乐部预算', () => {
+  it('从 club 读取起始转会预算、周薪空间与历史返工次数', () => {
+    const club = makeClub({ transferBudget: 30, wageBudget: 200, failures: 2 });
+    const state = reachRepair(7, { budget: true, negotiation: true }, club);
+    expect(state.startTransferBudget).toBe(3000);
+    expect(state.startWageBudget).toBe(200);
+    expect(state.clubFailures).toBe(2);
+    const window = unwrap(startWindow(state));
+    expect(window.budget).toBe(3000);
+    expect(window.wage).toBe(200);
+    expect(budgetLimit(window)).toBe(3000);
+    expect(budgetBase(window)).toBe(3000);
+  });
+
+  it('每次重新配置扣 €1M 返工成本，最低为 0', () => {
+    const club = makeClub({ transferBudget: 30, wageBudget: 200 });
+    let state = unwrap(startWindow(reachRepair(7, { budget: true, negotiation: true }, club)));
+    expect(state.budget).toBe(3000);
+    state = unwrap(makeOffer(state, 'chen-yan', 'high'));
+    state = unwrap(closeWindow(state));
+    state = unwrap(reconfigure(state));
+    expect(reworkCount(state)).toBe(1);
+    expect(state.budget).toBe(2900);
+    state = unwrap(startWindow(state));
+    expect(state.budget).toBe(2900);
+    state = unwrap(closeWindow(state));
+    state = unwrap(reconfigure(state));
+    expect(reworkCount(state)).toBe(2);
+    expect(state.budget).toBe(2800);
+    expect(reworkCostPaid(state)).toBe(2 * REWORK_COST);
+    const poor = makeClub({ transferBudget: 0.5, wageBudget: 100 });
+    let low = unwrap(startWindow(reachRepair(9, { budget: true, negotiation: true }, poor)));
+    expect(low.budget).toBe(50);
+    low = unwrap(closeWindow(low));
+    low = unwrap(reconfigure(low));
+    expect(low.budget).toBe(0);
+    low = unwrap(startWindow(low));
+    expect(low.budget).toBe(0);
+    const patch = buildTransfersClubPatch(low);
+    expect(patch.transferBudget).toBe(0);
+    expect(patch.addFailures).toBe(1);
+  });
+
+  it('clubPatch 提交真实签约、绝对剩余预算与返工次数', () => {
+    const club = makeClub({ transferBudget: 45, wageBudget: 350 });
+    let state = unwrap(startWindow(reachRepair(7, { budget: true, negotiation: true }, club)));
+    state = unwrap(makeOffer(state, 'jiang-ye', 'low'));
+    state = unwrap(makeOffer(state, 'mula-ti', 'normal'));
+    state = unwrap(closeWindow(state));
+    const patch = buildTransfersClubPatch(state);
+    expect(patch.signings).toHaveLength(2);
+    expect(patch.signings?.[0]).toMatchObject({
+      id: 'jiang-ye',
+      name: '江野',
+      position: '边锋',
+      fee: 19.8,
+      wage: 160,
+      homegrown: true,
+    });
+    expect(patch.signings?.[1]?.homegrown).toBe(false);
+    expect(patch.transferBudget).toBe(Math.round((state.budget / 100) * 10) / 10);
+    expect(patch.wageBudget).toBe(state.wage);
+    expect(patch.addFailures).toBe(0);
+  });
+
+  it('失败与跨关信息写进 clubUpdate', () => {
+    const club = makeClub({ transferBudget: 30, wageBudget: 250, failures: 1 });
+    let state = unwrap(startWindow(reachRepair(7, { budget: true, negotiation: true }, club)));
+    state = unwrap(closeWindow(state));
+    state = unwrap(reconfigure(state));
+    state = unwrap(startWindow(state));
+    state = unwrap(makeOffer(state, 'chen-yan', 'low'));
+    state = unwrap(makeOffer(state, 'mula-ti', 'low'));
+    state = unwrap(closeWindow(state));
+    const update = buildTransfersClubUpdate(state);
+    expect(update.details.join('')).toContain('返工 1 次');
+    expect(update.details.join('')).toContain('返工成本 €1M');
+    expect(update.details.join('')).toContain('跨关引援');
+    expect(update.details.join('')).toContain('陈砚');
+  });
+
+  it('展示模式没有 club 时使用默认预算', () => {
+    const state = createTransfersState({
+      mode: 'showcase',
+      seed: 20251018,
+      fastStart: false,
+      showcaseOptions: { seed: 20251018, fastPlay: true, startPhase: 'verify' },
+    });
+    expect(state.startTransferBudget).toBe(TRANSFER_BUDGET);
+    expect(state.startWageBudget).toBe(TRANSFER_WAGE_SPACE);
+    expect(state.clubFailures).toBe(0);
+    const patch = buildTransfersClubPatch(state);
+    expect(patch.addFailures).toBe(0);
+  });
+});
+
+/* ==========================================================================
+   v5：球探室候选接入转会窗
+   ========================================================================== */
+
+const SCOUT_TARGETS: ClubScoutCandidate[] = [
+  { id: 'lin-tuo', name: '林拓', position: '中后卫', region: 'local', knowledge: 90 },
+  { id: 'luka-payne', name: '卢卡·佩恩', position: '左边锋', region: 'local', knowledge: 70 },
+  { id: 'kai-ferro', name: '凯·费罗', position: '后腰', region: 'southern-europe', knowledge: 40 },
+];
+
+describe('转会窗 v5 · 球探室额外目标', () => {
+  it('开始窗口时最多加入 2 名球探目标，并显示知识度与确定性费用', () => {
+    const club = makeClub({ scoutedCandidates: SCOUT_TARGETS });
+    const repair = reachRepair(7, { budget: true, negotiation: true }, club);
+    expect(repair.players).toHaveLength(3);
+    const window = unwrap(startWindow(repair));
+    expect(window.players).toHaveLength(5);
+    const extras = window.players.filter((player) => player.source === 'scout');
+    expect(extras.map((player) => player.name)).toEqual(['林拓', '卢卡·佩恩']);
+    expect(extras[0]).toMatchObject({
+      id: 'scout-lin-tuo',
+      position: '中后卫',
+      valuation: SCOUT_TARGET_ECONOMICS.DF.fee,
+      wage: SCOUT_TARGET_ECONOMICS.DF.wage,
+      agentFee: SCOUT_TARGET_ECONOMICS.DF.agentFee,
+      homegrown: true,
+      knowledge: 90,
+      source: 'scout',
+    });
+    expect(extras[1]).toMatchObject({
+      id: 'scout-luka-payne',
+      position: '左边锋',
+      valuation: SCOUT_TARGET_ECONOMICS.FW.fee,
+      wage: SCOUT_TARGET_ECONOMICS.FW.wage,
+      homegrown: true,
+      knowledge: 70,
+    });
+    expect(extras[0].scoutRegionLabel).toContain('本地球探');
+    expect(window.players.some((player) => player.name === '凯·费罗')).toBe(false);
+  });
+
+  it('知识度越高，初始竞争兴趣越低', () => {
+    const high = scoutTargetRivalInterest(95);
+    const mid = scoutTargetRivalInterest(70);
+    const low = scoutTargetRivalInterest(30);
+    expect(high).toBeLessThan(mid);
+    expect(mid).toBeLessThan(low);
+    const club = makeClub({ scoutedCandidates: [SCOUT_TARGETS[0], SCOUT_TARGETS[2]] });
+    const window = unwrap(startWindow(reachRepair(7, { budget: true, negotiation: true }, club)));
+    const highPlayer = window.players.find((player) => player.name === '林拓');
+    const lowPlayer = window.players.find((player) => player.name === '凯·费罗');
+    expect(highPlayer?.rivalInterest).toBe(scoutTargetRivalInterest(90));
+    expect(lowPlayer?.rivalInterest).toBe(scoutTargetRivalInterest(40));
+  });
+
+  it('没有 club 或球探候选为空时保持 3 名目标', () => {
+    const noClub = unwrap(startWindow(reachRepair(7, { budget: true, negotiation: true })));
+    expect(noClub.players).toHaveLength(3);
+    const emptyClub = unwrap(
+      startWindow(reachRepair(7, { budget: true, negotiation: true }, makeClub({ scoutedCandidates: [] }))),
+    );
+    expect(emptyClub.players).toHaveLength(3);
+  });
+
+  it('球探目标可以签约、计入至少 2 人并进入 clubPatch.signings', () => {
+    const club = makeClub({ scoutedCandidates: SCOUT_TARGETS });
+    let state = unwrap(startWindow(reachRepair(7, { budget: true, negotiation: true }, club)));
+    state = unwrap(makeOffer(state, 'scout-lin-tuo', 'low'));
+    expect(playerOf(state, 'scout-lin-tuo').status).toBe('signed');
+    state = unwrap(makeOffer(state, 'mula-ti', 'normal'));
+    expect(isGoalMet(state)).toBe(true);
+    state = unwrap(closeWindow(state));
+    const patch = buildTransfersClubPatch(state);
+    expect(patch.signings).toHaveLength(2);
+    const scoutSigning = patch.signings?.find((signing) => signing.id === 'scout-lin-tuo');
+    expect(scoutSigning).toMatchObject({
+      id: 'scout-lin-tuo',
+      name: '林拓',
+      position: '中后卫',
+      fee: 14.4,
+      wage: 120,
+      homegrown: true,
+    });
+    expect(buildTransfersClubUpdate(state).details.join('')).toContain('球探室带来的目标：林拓');
+  });
+
+  it('球探目标进入存档恢复；损坏的球探候选会被拒绝', () => {
+    const club = makeClub({ scoutedCandidates: SCOUT_TARGETS });
+    const window = unwrap(startWindow(reachRepair(7, { budget: true, negotiation: true }, club)));
+    const revived = reviveTransfersState(JSON.parse(JSON.stringify(window)));
+    expect(revived).toEqual(window);
+    expect(reviveTransfersState({ ...JSON.parse(JSON.stringify(window)), scoutTargets: 'nope' })).toBeNull();
+    const badPlayers = JSON.parse(JSON.stringify(window));
+    badPlayers.players = badPlayers.players.slice(0, 4);
+    expect(reviveTransfersState(badPlayers)).toBeNull();
+  });
+
+  it('窗口内显示球探知识度，并可以点按钮签下球探目标', () => {
+    const club = makeClub({ scoutedCandidates: SCOUT_TARGETS });
+    const window = unwrap(startWindow(reachRepair(7, { budget: true, negotiation: true }, club)));
+    render(
+      createElement(TransfersLevel, {
+        level: getLevel('transfers'),
+        mode: 'normal',
+        fastStart: false,
+        showcaseOptions: null,
+        club,
+        savedState: window,
+        onSaveState: vi.fn(),
+        onComplete: vi.fn(),
+        onExit: vi.fn(),
+      }),
+    );
+    expect(screen.getAllByText(/知识度 90%/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('球探室报告').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('button', { name: /正常报价：林拓/ }));
+    expect(screen.getByText('已签约')).toBeTruthy();
+  });
+});
+
+describe('转会窗 v4 · UI 跨关面板', () => {
+  it('俱乐部面板显示历史返工与 €1M 成本提示', () => {
+    const club = makeClub({ transferBudget: 30, wageBudget: 200, failures: 3 });
+    const state = unwrap(startWindow(reachRepair(7, { budget: true, negotiation: true }, club)));
+    render(
+      createElement(TransfersLevel, {
+        level: getLevel('transfers'),
+        mode: 'normal',
+        fastStart: false,
+        showcaseOptions: null,
+        club,
+        savedState: state,
+        onSaveState: vi.fn(),
+        onComplete: vi.fn(),
+        onExit: vi.fn(),
+      }),
+    );
+    expect(screen.getByText('俱乐部状态')).toBeTruthy();
+    expect(screen.getByText('俱乐部历史返工')).toBeTruthy();
+    expect(screen.getAllByText(/€1M/).length).toBeGreaterThan(0);
   });
 });

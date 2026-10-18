@@ -195,6 +195,41 @@ describe('俱乐部时间线', () => {
     }
     expect(progress.club.timeline.map((entry) => entry.levelId)).toEqual([...levels]);
     expect(progress.club.timeline).toHaveLength(4);
+    expect(progress.club.week).toBe(4);
+  });
+
+  it('clubPatch 会合并跨关预算、战术、签约与返工次数', () => {
+    const withPatch: LevelCompletion = {
+      ...COMPLETION,
+      clubPatch: {
+        tactics: {
+          possessionShape: '4-3-3',
+          outOfPossessionShape: '4-4-2-mid',
+          fullbackDuty: 'overlap',
+          pivotDuty: 'double',
+        },
+        transferBudget: 41,
+        addFailures: 2,
+        signings: [{ id: 's1', name: '江野', position: '边锋', fee: 22, wage: 160, homegrown: false }],
+      },
+    };
+    const outcome = applyLevelCompletion(getDefaultProgress(), createEmptyDemo(), 'tactics', withPatch, 'normal', NOW);
+    expect(outcome.progress.club.transferBudget).toBe(41);
+    expect(outcome.progress.club.failures).toBe(2);
+    expect(outcome.progress.club.tactics?.possessionShape).toBe('4-3-3');
+    expect(outcome.progress.club.signings).toHaveLength(1);
+    expect(outcome.progress.club.signings[0].name).toBe('江野');
+    expect(outcome.progress.club.week).toBe(1);
+  });
+
+  it('clubPatch 的预算不会变成负数', () => {
+    const withPatch: LevelCompletion = {
+      ...COMPLETION,
+      clubPatch: { transferBudget: -10, addFailures: 3 },
+    };
+    const outcome = applyLevelCompletion(getDefaultProgress(), createEmptyDemo(), 'tactics', withPatch, 'normal', NOW);
+    expect(outcome.progress.club.transferBudget).toBe(0);
+    expect(outcome.progress.club.failures).toBe(3);
   });
 });
 

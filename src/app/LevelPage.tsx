@@ -71,6 +71,7 @@ export function LevelPage({ levelId }: { levelId: LevelId }) {
         mode={mode}
         fastStart={fastStart}
         showcaseOptions={showcaseOptions}
+        club={mode === 'normal' ? progress.club : undefined}
         savedState={savedState}
         onSaveState={(state) => saveLevelState(levelId, state)}
         onComplete={(result) => completeLevel(levelId, result)}

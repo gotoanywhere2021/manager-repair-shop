@@ -3,6 +3,7 @@ import { createElement } from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { getLevel } from '../src/game/levels';
 import type { LevelScreenProps } from '../src/game/engine/types';
+import type { ClubState } from '../src/game/engine/types';
 import { createRng } from '../src/game/engine/rng';
 import {
   DEFAULT_TACTICS_CONFIG,
@@ -23,6 +24,7 @@ import {
   archiveBlockReason,
   archiveBlocker,
   buildArchiveSummary,
+  buildClubPatch,
   buildClubUpdate,
   buildCompletionResult,
   buildTacticsComparison,
@@ -31,6 +33,7 @@ import {
   chooseVerifyInstruction,
   completeArchive,
   createInitialTacticsState,
+  DEFAULT_TRANSFER_BUDGET,
   dutyMetrics,
   evaluateTacticsVerification,
   faultTotals,
@@ -39,10 +42,12 @@ import {
   openDiagnose,
   openSummary,
   openTransfer,
+  remainingBudget,
   requiredStages,
   resolveDiagnose,
   resolveTransfer,
   retryVerification,
+  RETRY_COST_MILLIONS,
   reviveTacticsState,
   shapeMetrics,
   simulateFaultStage,
@@ -62,6 +67,20 @@ import type { TacticsInitOptions, TacticsState } from '../src/game/levels/tactic
 import { TacticsLevel } from '../src/game/levels/tactics/TacticsLevel';
 
 const NORMAL: TacticsInitOptions = { mode: 'normal', fastStart: false, showcaseOptions: null };
+
+const CLUB: ClubState = {
+  name: '北港联',
+  season: '2026/27',
+  week: 0,
+  transferBudget: DEFAULT_TRANSFER_BUDGET,
+  wageBudget: 350,
+  failures: 0,
+  tactics: null,
+  scoutedCandidates: [],
+  signings: [],
+  timeline: [],
+  seasonReport: null,
+};
 
 function showcase(startPhase: 'faultPlay' | 'diagnose' | 'repair' | 'verify', fastPlay = true): TacticsInitOptions {
   return { mode: 'showcase', fastStart: false, showcaseOptions: { seed: 20251018, fastPlay, startPhase } };
@@ -129,6 +148,7 @@ function makeProps(overrides: Partial<LevelScreenProps> = {}): LevelScreenProps 
     mode: 'normal',
     fastStart: true,
     showcaseOptions: null,
+    club: CLUB,
     savedState: undefined,
     onSaveState: vi.fn(),
     onComplete: vi.fn(),
@@ -436,25 +456,132 @@ describe('战术板 v2：展示模式与存档校验', () => {
     expect(skipTransferInShowcase(state)).toBe(state);
   });
 
-  it('合法 v2 存档可以恢复，v1/损坏存档安全回退', () => {
+  it('合法 v3 存档可以恢复，v1/v2/损坏存档安全回退', () => {
     const state = reachFinishedVerify();
     const restored = reviveTacticsState(JSON.parse(JSON.stringify(state)) as unknown, NORMAL);
     expect(restored).not.toBeNull();
     expect(restored?.phase).toBe('verify');
     expect(restored?.loadout).toEqual(state.loadout);
     expect(restored?.verify.results).toEqual(state.verify.results);
+    expect(restored?.budget).toBe(state.budget);
+    expect(restored?.failureCount).toBe(state.failureCount);
 
     const base = JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
     expect(reviveTacticsState(null, NORMAL)).toBeNull();
     expect(reviveTacticsState({ ...base, version: 1 }, NORMAL)).toBeNull();
+    expect(reviveTacticsState({ ...base, version: 2 }, NORMAL)).toBeNull();
     expect(reviveTacticsState({ ...base, phase: '不存在' }, NORMAL)).toBeNull();
+    expect(reviveTacticsState({ ...base, budget: -1 }, NORMAL)).toBeNull();
     expect(reviveTacticsState({ ...base, loadout: { shape: 'man-marking', attack: 'wrong' } }, NORMAL)).toBeNull();
     expect(reviveTacticsState({ ...base, evidence: { experiencedFault: true } }, NORMAL)).toBeNull();
     expect(reviveTacticsState(base, showcase('verify'))).toBeNull();
   });
 });
 
+describe('战术板 v4：返工成本、预算与 clubPatch', () => {
+  function failedTwice(): TacticsState {
+    let state = installWrongModules(reachRepair());
+    state = startVerify(state);
+    state = playVerify(state);
+    state = retryVerification(state);
+    state = startVerify(state);
+    state = playVerify(state);
+    return retryVerification(state);
+  }
+
+  it('失败返工每次扣 €1M 并累计，预算最低 0', () => {
+    let state = installWrongModules(reachRepair());
+    state = startVerify(state);
+    state = playVerify(state);
+    expect(state.failureCount).toBe(0);
+    expect(remainingBudget(state)).toBe(45);
+
+    state = retryVerification(state);
+    expect(state.failureCount).toBe(1);
+    expect(remainingBudget(state)).toBe(45 - RETRY_COST_MILLIONS);
+
+    const twice = failedTwice();
+    expect(twice.failureCount).toBe(2);
+    expect(remainingBudget(twice)).toBe(43);
+
+    const poor: TacticsState = { ...installWrongModules(reachRepair()), budget: 0.5 };
+    let floorState = startVerify(poor);
+    floorState = playVerify(floorState);
+    floorState = retryVerification(floorState);
+    expect(floorState.failureCount).toBe(1);
+    expect(remainingBudget(floorState)).toBe(0);
+    floorState = startVerify(floorState);
+    floorState = playVerify(floorState);
+    floorState = retryVerification(floorState);
+    expect(floorState.failureCount).toBe(2);
+    expect(remainingBudget(floorState)).toBe(0);
+    expect(remainingBudget(floorState)).toBeGreaterThanOrEqual(0);
+  });
+
+  it('正常模式完成时 clubPatch 提交战术配置、绝对预算与返工次数', () => {
+    let state = installWrongModules(reachRepair());
+    state = startVerify(state);
+    state = playVerify(state);
+    state = retryVerification(state);
+    state = toggleTacticsModule(state, 'man-marking');
+    state = toggleTacticsModule(state, 'long-ball');
+    state = installCorrectModules(state);
+    state = startVerify(state);
+    state = playVerify(state);
+    state = openTransfer(state);
+    state = resolveTransfer(state);
+    state = openSummary(state);
+
+    const result = buildCompletionResult(state);
+    expect(result.clubPatch).toBeTruthy();
+    expect(result.clubPatch?.tactics).toEqual({ ...state.config });
+    expect(result.clubPatch?.addFailures).toBe(1);
+    expect(result.clubPatch?.transferBudget).toBe(44);
+    expect(result.clubPatch?.transferBudget).toBe(remainingBudget(state));
+    expect(result.clubUpdate.details.join(' ')).toContain('返工 1 次');
+    expect(result.clubUpdate.details.join(' ')).toContain('€1M');
+    expect(result.clubUpdate.details.join(' ')).toContain('剩余转会预算 €44M');
+  });
+
+  it('预算从 props.club 起步；展示模式默认 45M 且不提交 clubPatch', () => {
+    const normal = createInitialTacticsState({ ...NORMAL, startingBudget: 20 }, 42);
+    expect(normal.budget).toBe(20);
+    expect(remainingBudget(normal)).toBe(20);
+
+    let demo = createInitialTacticsState(showcase('verify'), 20251018);
+    expect(demo.budget).toBe(DEFAULT_TRANSFER_BUDGET);
+    expect(buildClubPatch(demo)).toBeNull();
+    demo = playVerify(demo);
+    demo = openTransfer(demo);
+    demo = skipTransferInShowcase(demo);
+    const result = buildCompletionResult(demo);
+    expect(result.clubPatch).toBeUndefined();
+    expect(result.clubUpdate).toBeTruthy();
+  });
+});
+
 describe('战术板 v2：UI 冒烟测试', () => {
+  it('维修台不出现推荐/错误模块标签或快捷安装按钮，玩家自己组合模块', () => {
+    render(
+      createElement(
+        TacticsLevel,
+        makeProps({
+          mode: 'showcase',
+          fastStart: false,
+          showcaseOptions: { seed: 20251018, fastPlay: true, startPhase: 'repair' },
+        }),
+      ),
+    );
+    expect(screen.queryByText(/推荐/)).toBeNull();
+    expect(screen.queryByText(/错误模块/)).toBeNull();
+    expect(screen.queryByText(/有副作用/)).toBeNull();
+    expect(screen.queryByRole('button', { name: '安装双形态战术' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '安装职责分工' })).toBeNull();
+    // 模块卡仍在，玩家需要自己判断并安装。
+    expect(screen.getAllByText('双形态战术').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('全场人盯人').length).toBeGreaterThan(0);
+  });
+
   it('正确模块：从故障试玩走到归档，onComplete 只触发一次且带 clubUpdate', () => {
     const onComplete = vi.fn();
     const props = makeProps({
@@ -518,20 +645,24 @@ describe('战术板 v2：UI 冒烟测试', () => {
     fireEvent.click(screen.getByRole('button', { name: '提交判断' }));
     fireEvent.click(screen.getByRole('button', { name: '开始维修' }));
 
-    // 先装两个错误模块。
-    fireEvent.click(screen.getByRole('button', { name: '安装模块：全场人盯人 · 错误模块' }));
-    fireEvent.click(screen.getByRole('button', { name: '安装模块：长传冲吊 · 错误模块' }));
+    // 先装两个有副作用的模块。
+    fireEvent.click(screen.getByRole('button', { name: '安装模块：全场人盯人' }));
+    fireEvent.click(screen.getByRole('button', { name: '安装模块：长传冲吊' }));
     fireEvent.click(screen.getByRole('button', { name: '开始验证' }));
     for (let index = 0; index < 2; index += 1) {
       fireEvent.click(screen.getByRole('button', { name: /保护边路/ }));
     }
     expect(screen.getByText(/验证未达成/)).toBeTruthy();
+    expect(screen.getAllByText(/€1M/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/转会预算将受影响/).length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: '完成验证，去迁移' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '回到维修台重新配置' }));
+    expect(screen.getAllByText(/本关返工 1 次/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/€44M/).length).toBeGreaterThan(0);
 
-    // 重新配置：卸载错误模块，安装正确模块，重新验证。
-    fireEvent.click(screen.getByRole('button', { name: '卸载模块：全场人盯人 · 错误模块' }));
-    fireEvent.click(screen.getByRole('button', { name: '卸载模块：长传冲吊 · 错误模块' }));
+    // 重新配置：卸载有副作用的模块，安装两套模块，重新验证。
+    fireEvent.click(screen.getByRole('button', { name: '卸载模块：全场人盯人' }));
+    fireEvent.click(screen.getByRole('button', { name: '卸载模块：长传冲吊' }));
     fireEvent.click(screen.getByRole('button', { name: '安装模块：双形态战术' }));
     fireEvent.click(screen.getByRole('button', { name: '安装模块：职责分工' }));
     fireEvent.click(screen.getByRole('button', { name: /重新验证/ }));
@@ -566,9 +697,14 @@ describe('战术板 v2：UI 冒烟测试', () => {
     fireEvent.click(screen.getByRole('button', { name: '演示跳过迁移题' }));
     fireEvent.click(screen.getByRole('button', { name: /完成归档，返回修理铺/ }));
     expect(onComplete).toHaveBeenCalledTimes(1);
-    const result = onComplete.mock.calls[0][0] as { evidence: { transferred: boolean }; clubUpdate?: { headline: string } };
+    const result = onComplete.mock.calls[0][0] as {
+      evidence: { transferred: boolean };
+      clubUpdate?: { headline: string };
+      clubPatch?: unknown;
+    };
     expect(result.evidence.transferred).toBe(false);
     expect(result.clubUpdate?.headline).toBeTruthy();
+    expect(result.clubPatch).toBeUndefined();
   });
 
   it('可视化：职责画在阵型图上，指标旁有相对故障版增减与解释', () => {
