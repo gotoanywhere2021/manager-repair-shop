@@ -2,6 +2,9 @@
 
 > 把不好玩的足球经理，修成有选择的足球经理。
 
+**在线试玩：** https://gotoanywhere2021.github.io/manager-repair-shop/
+**GitHub 仓库：** https://github.com/gotoanywhere2021/manager-repair-shop
+
 一个可以直接在浏览器里玩的足球经理教学游戏。你扮演俱乐部系统修理工：先试玩一个坏掉的俱乐部系统，再亲手安装战术、球探、转会与注册规则，调整参数、再次试玩，用真实的比赛记录、球探报告和注册名单理解「规则怎样改变选择」。
 
 - 技术栈：React 19 + TypeScript + Vite，Vitest 做规则测试。
