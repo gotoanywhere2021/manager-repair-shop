@@ -181,6 +181,7 @@ describe('sanitizeProgress 数据规整', () => {
       lastSavedAt: new Date(0).toISOString(),
       levelStates: {},
       completedAt: {},
+      club: { name: '北港联', season: '2026/27', timeline: [] },
     });
   });
 });

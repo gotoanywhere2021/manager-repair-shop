@@ -111,6 +111,15 @@ export interface ShowcaseOptions {
 export interface LevelCompletion {
   evidence: Evidence;
   summary: string[];
+  /** 真实赛季结果，用于主页俱乐部办公室的时间线与下一份委托。 */
+  clubUpdate?: ClubUpdate;
+}
+
+/** 关卡完成后写入俱乐部档案的真实结果，不包含虚构评分。 */
+export interface ClubUpdate {
+  headline: string;
+  details: string[];
+  nextBrief?: string;
 }
 
 /** 每个关卡组件统一接收的 props。 */

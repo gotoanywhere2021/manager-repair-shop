@@ -1,6 +1,14 @@
 import { useApp } from './AppContext';
-import { LEVELS, MECHANISM_NAMES, isLevelUnlocked, levelCardStatus, summarizeProgress } from '../game/levels';
+import {
+  LEVELS,
+  MECHANISM_NAMES,
+  getLevel,
+  isLevelUnlocked,
+  levelCardStatus,
+  summarizeProgress,
+} from '../game/levels';
 import type { LevelDefinition } from '../game/engine/types';
+import type { LevelProgressSummary } from '../game/levels';
 import { Button, Chip, Meter, Panel } from '../components/Ui';
 
 const STATUS_LABEL = {
@@ -99,6 +107,8 @@ export function HomeScreen() {
         ))}
       </section>
 
+      <ClubOffice summary={summary} />
+
       <section className="home-section">
         <header className="section-head">
           <div>
@@ -173,7 +183,7 @@ export function HomeScreen() {
           </button>
           。
         </p>
-        <p>《经理修理铺》v2.0 · 非官方足球经理题材 · 进度保存在本机浏览器。</p>
+        <p>《经理修理铺》v3.0 · 非官方足球经理题材 · 进度保存在本机浏览器。</p>
       </footer>
     </div>
   );
@@ -238,3 +248,106 @@ function CommissionCard({
     </article>
   );
 }
+
+function ClubOffice({ summary }: { summary: LevelProgressSummary }) {
+  const { progress, startLevel } = useApp();
+  const club = progress.club;
+  const latest = club.timeline[club.timeline.length - 1];
+  const nextLevel = getLevel(summary.nextLevel);
+  const seasonDone = summary.completedCount >= LEVELS.length;
+  const week = Math.min(summary.completedCount + 1, LEVELS.length);
+
+  return (
+    <section className="club-office" aria-label="俱乐部办公室">
+      <header className="club-office-head">
+        <div>
+          <p className="eyebrow">俱乐部办公室 · 赛季进行中</p>
+          <h2 className="club-office-title">
+            {club.name}
+            <span>{club.season} 赛季</span>
+          </h2>
+          <p className="club-office-meta">
+            第 {week} 周 · 已完成 {summary.completedCount} / {LEVELS.length} 份系统维修
+          </p>
+        </div>
+        <div className="club-office-side">
+          <Chip tone="purple">董事会委托：修好四个系统</Chip>
+          {latest && <span className="club-office-time">最近更新 {formatClubTime(latest.at)}</span>}
+        </div>
+      </header>
+
+      <div className="club-office-grid">
+        <div className="club-latest">
+          <p className="club-label">最近一份维修结果</p>
+          {latest ? (
+            <>
+              <h3>{latest.headline}</h3>
+              <ul>
+                {latest.details.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p className="club-empty">
+              还没有结果。完成第一份委托后，这里会记录真实的比赛、报告、签约或名单数据，而不是虚构评分。
+            </p>
+          )}
+        </div>
+
+        <div className="club-next">
+          <p className="club-label">{seasonDone ? '赛季收官' : '下一份委托'}</p>
+          {seasonDone ? (
+            <p className="club-empty">
+              四个系统都修好了。你可以重玩任意一关，或者打开经理图鉴回看四张系统卡。
+            </p>
+          ) : (
+            <>
+              <h3>
+                {nextLevel.title}
+                <span className="club-next-client">
+                  {nextLevel.clientName} · {nextLevel.clientRole}
+                </span>
+              </h3>
+              <blockquote>“{nextLevel.complaint}”</blockquote>
+              <Button size="sm" onClick={() => startLevel(nextLevel.id)}>
+                继续处理
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      <ol className="club-timeline" aria-label="赛季维修时间线">
+        {LEVELS.map((level) => {
+          const entry = club.timeline.find((item) => item.levelId === level.id);
+          const completed = Boolean(entry);
+          const current = !completed && isLevelUnlocked(level.id, progress.completedLevels);
+          return (
+            <li
+              key={level.id}
+              className={`club-timeline-item${completed ? ' is-done' : ''}${current ? ' is-current' : ''}`}
+            >
+              <span className="club-timeline-dot" aria-hidden="true">
+                {completed ? '✓' : level.order}
+              </span>
+              <div>
+                <p className="club-timeline-title">{level.title}</p>
+                <p className="club-timeline-text">
+                  {entry ? entry.headline : current ? '待维修' : '未解锁'}
+                </p>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
+function formatClubTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '刚刚';
+  return date.toLocaleString('zh-CN', { hour12: false });
+}
+

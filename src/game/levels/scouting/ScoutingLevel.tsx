@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { LevelScreenProps } from '../../engine/types';
+import type { ClubUpdate, LevelScreenProps } from '../../engine/types';
 import { randomSeed } from '../../engine/rng';
 import { LevelWorkbench } from '../../../components/Workbench';
 import { Button, Callout, Chip, Meter, Panel, RuleList, StatTile } from '../../../components/Ui';
@@ -10,42 +10,48 @@ import { ComparisonTable, EventLogList } from '../../../components/EventLogView'
 import {
   DIAGNOSE_CORRECT_ID,
   DIAGNOSE_OPTIONS,
-  KNOWLEDGE_GAIN,
   KNOWLEDGE_MAX,
   REGIONS,
-  ROUNDS_FAST,
-  ROUNDS_NORMAL,
-  SCOUTS_PER_ROUND,
+  SCOUTING_MODULES,
+  SCOUTING_TARGETS,
   SCOUT_CANDIDATES,
   TRANSFER_CORRECT_ID,
   TRANSFER_OPTIONS,
   abilityLines,
+  archiveBlockReason,
   assignScout,
   buildArchiveSummary,
   buildCandidateReports,
+  buildClubUpdate,
   buildCompletionResult,
   buildScoutingComparison,
   canAssignScout,
   canComplete,
   candidateReport,
   completeArchive,
-  coveredRegions,
   createInitialScoutingState,
+  dispatchRuleSummary,
   endRound,
+  evaluateScoutingVerification,
+  findCandidate,
   finishFaultPlay,
   inspectCandidate,
-  installKnowledgeReports,
-  installLimitedScouts,
   isSelectingCandidate,
+  isVerificationDone,
   knowledgeSummary,
+  loadoutModuleNames,
+  moduleKnowledgeGain,
+  moduleScoutsPerRound,
   openSummary,
   openTransfer,
   pickFaultCandidate,
+  precisionDescription,
   precisionLabel,
   regionName,
   reportPrecision,
   resolveDiagnose,
   resolveTransfer,
+  retryVerification,
   reviveScoutingState,
   scoutsAvailable,
   selectCandidate,
@@ -53,17 +59,25 @@ import {
   startFaultPlay,
   startRepair,
   startVerify,
+  toggleScoutingModule,
   trueOverall,
 } from './logic';
-import type { CandidateReport, RegionId, ScoutingInitOptions, ScoutingState } from './logic';
+import type {
+  CandidateReport,
+  RegionId,
+  ScoutingInitOptions,
+  ScoutingState,
+  ScoutingTargetCheck,
+} from './logic';
 import './scouting.css';
 
 /* ==========================================================================
-   关卡二《球探室》界面。规则全部在 logic.ts，这里只负责把状态画出来。
+   关卡二《球探室》界面（v2：模块池 / 失败重试 / 知识度与报告可视化）
    ========================================================================== */
 
 const PRECISION_TONE = {
   unknown: 'neutral',
+  unreliable: 'red',
   wide: 'amber',
   narrow: 'purple',
   precise: 'green',
@@ -73,11 +87,39 @@ function precisionTone(precision: CandidateReport['precision']) {
   return PRECISION_TONE[precision];
 }
 
+/** 报告区间条：只画区间与知识度，不显示真实精确值。 */
+function RangeBar({ report }: { report: CandidateReport }) {
+  if (!report.range) {
+    return <p className="scouting-range-empty">未知：还没有可用的报告区间。</p>;
+  }
+  const { low, high } = report.range;
+  const width = Math.max(1, high - low);
+  return (
+    <div className="scouting-range">
+      <div className="scouting-range-head">
+        <span>报告区间</span>
+        <strong>
+          {low} – {high}
+        </strong>
+        <span className="scouting-range-precision">知识度 {report.knowledge}%</span>
+      </div>
+      <div className="scouting-range-track" role="img" aria-label={`报告区间 ${low} 到 ${high}，知识度 ${report.knowledge}%`}>
+        <span
+          className={`scouting-range-fill is-${report.precision}`}
+          style={{ left: `${Math.max(0, Math.min(100, low))}%`, width: `${Math.min(100, width)}%` }}
+        />
+      </div>
+      <p className="scouting-range-note">
+        {precisionDescription(report.precision)} 不会显示真实精确值。
+      </p>
+    </div>
+  );
+}
+
 function ReportCard({
   name,
   position,
   region,
-  knowledge,
   report,
   action,
   footer,
@@ -85,7 +127,6 @@ function ReportCard({
   name: string;
   position: string;
   region: RegionId;
-  knowledge: number;
   report: CandidateReport;
   action?: ReactNode;
   footer?: ReactNode;
@@ -101,13 +142,46 @@ function ReportCard({
         </div>
         <Chip tone={precisionTone(report.precision)}>{precisionLabel(report.precision)}</Chip>
       </header>
-      <div className="scouting-candidate-knowledge">
-        <Meter label="区域知识度" value={knowledge} max={KNOWLEDGE_MAX} tone="purple" valueLabel={`${knowledge} / ${KNOWLEDGE_MAX}`} />
-      </div>
+      <RangeBar report={report} />
       <p className="scouting-report">{report.summary}</p>
       {footer}
       {action && <div className="scouting-candidate-actions">{action}</div>}
     </article>
+  );
+}
+
+function TargetList({ targets }: { targets: ScoutingTargetCheck[] }) {
+  return (
+    <ul className="scouting-targets" aria-label="验证目标">
+      {targets.map((target) => (
+        <li key={target.id} className={`scouting-target${target.met ? ' is-met' : ' is-missed'}`}>
+          <span className="scouting-target-mark" aria-hidden="true">
+            {target.met ? '✓' : '✗'}
+          </span>
+          <span className="scouting-target-body">
+            <span className="scouting-target-label">{target.label}</span>
+            <span className="scouting-target-detail">
+              要求 {target.requirement} · 实际 {target.actual}
+            </span>
+          </span>
+          <span className="visually-hidden">{target.met ? '已达成' : '未达成'}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ClubUpdateBox({ update }: { update: ClubUpdate }) {
+  return (
+    <div className="scouting-club-update">
+      <p className="scouting-club-headline">{update.headline}</p>
+      <ul className="bullet-list">
+        {update.details.map((line) => (
+          <li key={line}>{line}</li>
+        ))}
+      </ul>
+      {update.nextBrief && <p className="scouting-club-next">下一份委托：{update.nextBrief}</p>}
+    </div>
   );
 }
 
@@ -152,8 +226,19 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
   const selecting = isSelectingCandidate(state);
   const roundsDone = state.round >= state.rounds;
   const dispatchOpen = !selecting && !roundsDone;
+  const verification = evaluateScoutingVerification(state);
+  const done = isVerificationDone(state);
+  const scoutsPerRound = moduleScoutsPerRound(state);
+  const knowledgeGain = moduleKnowledgeGain(state);
   const remainingScouts = scoutsAvailable(state);
   const reports = new Map(buildCandidateReports(state).map((report) => [report.candidateId, report]));
+  const loadoutNames = loadoutModuleNames(state.loadout);
+  const clubUpdate = buildClubUpdate(state);
+  const selectedCandidate = state.selectedCandidateId ? findCandidate(state.selectedCandidateId) ?? null : null;
+  const selectedReport = selectedCandidate
+    ? reports.get(selectedCandidate.id) ?? candidateReport(selectedCandidate, state.knowledge[selectedCandidate.region])
+    : null;
+  const covered = REGIONS.filter((region) => state.knowledge[region.id] > 0);
 
   const commissionPanel = (
     <Panel title="接单：考察变成一个没有成本的按钮" subtitle={`${level.clientName} · ${level.clientRole}`} tone="purple">
@@ -257,7 +342,7 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
         correctIds={[DIAGNOSE_CORRECT_ID]}
         explanations={Object.fromEntries(DIAGNOSE_OPTIONS.map((option) => [option.id, option.explanation]))}
         wrongHint="提示：问题不在点击速度，也不在候选质量，而在信息有没有成本。"
-        successText="对。球探有限、信息需要一轮轮积累，考察才变成判断。下一步去安装模块。"
+        successText="对。球探有限、信息需要一轮轮积累，考察才变成判断。下一步去维修台挑模块。"
         initiallyResolved={state.diagnose.resolved}
         onResolved={() => apply(resolveDiagnose)}
       />
@@ -270,41 +355,55 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
   );
 
   const repairPanel = (
-    <Panel title="维修：给信息加上成本" subtitle="两个模块都安装后才能开始派遣" tone="purple">
+    <Panel title="维修台：4 个模块自由配置" subtitle="两个槽位各二选一；也可以什么都不装、装错模块直接派遣" tone="purple">
       {mode === 'showcase' && state.fault.done && !state.evidence.experiencedFault && (
         <Callout tone="amber" title="演示从这里开始">
           故障试玩记录取自规则基线，玩家没有亲自点过考察，因此不会计入「体验故障」证据。
         </Callout>
       )}
-      <ModuleCard
-        name="有限球探"
-        englishName="Limited Scouts"
-        summary="只有 2 名球探，可以派往不同区域；每个区域每轮只能安排一名球探；回合结束收回。"
-        sideEffect="区域越多，单个区域的知识增长越慢；后手区域可能错过窗口。"
-        installed={state.installed.limitedScouts}
-        onToggle={!state.installed.limitedScouts ? () => apply(installLimitedScouts) : undefined}
-      />
-      <ModuleCard
-        name="知识度报告"
-        englishName="Knowledge Reports"
-        summary="知识度从低到高逐级解锁属性区间：低知识度只给模糊评价，高知识度才接近真实能力。"
-        sideEffect="报告看起来「很难用」是正常的；它保护你免于被虚假的精确数字骗到。"
-        installed={state.installed.knowledgeReports}
-        onToggle={!state.installed.knowledgeReports ? () => apply(installKnowledgeReports) : undefined}
-      />
-      <div className="scouting-rule-strip">
-        <Chip tone="purple">{SCOUTS_PER_ROUND} 名球探 / 轮</Chip>
-        <Chip tone="purple">{REGIONS.length} 个区域</Chip>
-        <Chip tone="amber">同一区域每轮最多 1 人</Chip>
-        <Chip tone="green">每轮 +{KNOWLEDGE_GAIN} 知识度，上限 {KNOWLEDGE_MAX}</Chip>
+      <div className="scouting-slots">
+        {(['dispatch', 'report'] as const).map((slot) => (
+          <section className="scouting-slot" key={slot}>
+            <p className="scouting-slot-title">{slot === 'dispatch' ? '派遣模块（二选一）' : '报告模块（二选一）'}</p>
+            <div className="scouting-slot-cards">
+              {SCOUTING_MODULES.filter((module) => module.slot === slot).map((module) => {
+                const installed = state.loadout[slot] === module.id;
+                return (
+                  <ModuleCard
+                    key={module.id}
+                    name={`${module.name}${module.correct ? '' : ' · 错误模块'}`}
+                    englishName={module.englishName}
+                    summary={module.description}
+                    sideEffect={module.sideEffect}
+                    installed={installed}
+                    badge={<span className="scouting-module-effect">{module.effect}</span>}
+                    onToggle={() => apply((current) => toggleScoutingModule(current, module.id))}
+                  />
+                );
+              })}
+            </div>
+          </section>
+        ))}
       </div>
-      {state.installed.limitedScouts && state.installed.knowledgeReports ? (
-        <div className="scouting-actions">
-          <Button onClick={() => apply(startVerify)}>开始派遣（{state.rounds} 轮）</Button>
-        </div>
-      ) : (
-        <p className="scouting-hint">先安装上面两个模块：一个负责「派人」，一个负责「报告」。</p>
-      )}
+      <Callout tone="neutral" title="当前派遣规则">
+        {dispatchRuleSummary(state)}
+      </Callout>
+      <div className="scouting-rule-strip">
+        <Chip tone="purple">每轮 {scoutsPerRound} 名球探</Chip>
+        <Chip tone="purple">{REGIONS.length} 个区域</Chip>
+        <Chip tone="amber">每区域每轮最多 1 人</Chip>
+        <Chip tone={knowledgeGain > 0 ? 'green' : 'red'}>每次考察 +{knowledgeGain} 知识度</Chip>
+        <Chip tone="neutral">{state.rounds} 轮派遣</Chip>
+      </div>
+      <Callout tone="amber" title="验证目标">
+        至少 {SCOUTING_TARGETS.coverageMin} 个区域知识度 ≥ {SCOUTING_TARGETS.knowledgeThreshold}，且选中候选的报告精度至少「
+        {precisionLabel(SCOUTING_TARGETS.reportPrecisionMin)}」。未达成可以回到维修台重新配置。
+      </Callout>
+      <div className="scouting-actions">
+        <Button onClick={() => apply(startVerify)}>
+          {state.attempts > 0 ? `重新派遣（第 ${state.attempts + 1} 次尝试）` : `开始派遣（${state.rounds} 轮）`}
+        </Button>
+      </div>
     </Panel>
   );
 
@@ -314,21 +413,33 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
       subtitle={
         selecting
           ? '全部轮次结束：只能依据当前报告，从候选里选 1 名'
-          : roundsDone
-            ? '派遣完成：下面是当时可见的真实报告'
+          : done
+            ? verification.passed
+              ? '选择完成：目标全部达成'
+              : '选择完成：有目标没达成，可以回到维修台重新配置'
             : `第 ${Math.min(state.round + 1, state.rounds)} / ${state.rounds} 轮派遣`
       }
-      tone="green"
+      tone={done && !verification.passed ? 'amber' : 'green'}
     >
-      <Callout tone="amber" title="派遣规则">
-        每轮 {SCOUTS_PER_ROUND} 名球探；同一区域每轮最多 1 人；人数用完必须结束本轮。轮末球探收回，知识度留在区域里。
-      </Callout>
+      <div className="scouting-dispatch-head">
+        <p className="scouting-dispatch-title">{dispatchRuleSummary(state)}</p>
+        <div className="scouting-scout-tokens" aria-label={`剩余球探 ${remainingScouts} 名`}>
+          {Array.from({ length: scoutsPerRound }).map((_, index) => (
+            <span key={index} className={`scouting-scout-token${index < state.dispatches.length ? ' is-used' : ''}`} aria-hidden="true">
+              {index < state.dispatches.length ? '○' : '●'}
+            </span>
+          ))}
+          <span className="scouting-scout-text">
+            {remainingScouts > 0 ? `剩余 ${remainingScouts} 名球探` : '本轮球探已用完'}
+          </span>
+        </div>
+      </div>
       {mode === 'showcase' && !state.evidence.experiencedFault && (
         <Callout tone="amber" title="演示从验证开始">
           故障考察记录取自规则基线，玩家没有亲自点过「考察」，因此不会计入「体验故障」证据。
         </Callout>
       )}
-      <div className="scouting-regions">
+      <div className="scouting-map" aria-label="球探区域地图">
         {REGIONS.map((region) => {
           const knowledge = state.knowledge[region.id];
           const precision = reportPrecision(knowledge);
@@ -336,10 +447,14 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
           const disabled = !canAssignScout(state, region.id);
           let buttonLabel = `派球探到${region.name}`;
           if (dispatched) buttonLabel = '本轮已有球探';
-          else if (selecting) buttonLabel = '本轮已结束';
+          else if (roundsDone) buttonLabel = '本轮已结束';
           else if (remainingScouts === 0) buttonLabel = '本轮球探已用完';
           return (
-            <article key={region.id} className={`scouting-region${dispatched ? ' is-dispatched' : ''}`}>
+            <article
+              key={region.id}
+              className={`scouting-map-node scouting-region${dispatched ? ' is-dispatched' : ''}`}
+              style={{ left: `${region.mapX * 100}%`, top: `${region.mapY * 100}%` }}
+            >
               <header className="scouting-region-head">
                 <h3 className="scouting-region-name">{region.name}</h3>
                 <Chip tone={precisionTone(precision)}>{precisionLabel(precision)}</Chip>
@@ -358,24 +473,26 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
                   {buttonLabel}
                 </Button>
               )}
+              {dispatched && <span className="scouting-region-token" aria-hidden="true">● 球探已就位</span>}
             </article>
           );
         })}
       </div>
       {dispatchOpen && (
         <div className="scouting-round-bar">
-          <Chip tone="neutral">剩余球探 {remainingScouts} / {SCOUTS_PER_ROUND}</Chip>
-          <Button onClick={() => apply(endRound)} disabled={state.dispatches.length !== SCOUTS_PER_ROUND}>
+          <Chip tone="neutral">剩余球探 {remainingScouts} / {scoutsPerRound}</Chip>
+          <Button onClick={() => apply(endRound)} disabled={state.dispatches.length !== scoutsPerRound}>
             结束本轮并收回球探
           </Button>
         </div>
       )}
       {state.history.length > 0 && (
         <ComparisonTable
-          head={['轮次', '考察区域', '知识度变化']}
+          head={['轮次', '考察区域', `每次知识度`, '知识度变化']}
           rows={state.history.map((record) => [
             `第 ${record.round} 轮`,
             record.regions.map((region) => regionName(region)).join('、'),
+            `+${record.knowledgeGain}`,
             record.regions
               .map((region) => `${regionName(region)} ${record.knowledgeBefore[region]} → ${record.knowledgeAfter[region]}`)
               .join('；'),
@@ -396,13 +513,12 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
                 name={candidate.name}
                 position={candidate.position}
                 region={candidate.region}
-                knowledge={state.knowledge[candidate.region]}
                 report={report}
                 footer={selected ? <Chip tone="green">已加入候选名单</Chip> : undefined}
                 action={
                   selecting ? (
-                    <Button size="sm" disabled={selected} onClick={() => apply((current) => selectCandidate(current, candidate.id))}>
-                      {selected ? '已选择' : '加入候选名单'}
+                    <Button size="sm" onClick={() => apply((current) => selectCandidate(current, candidate.id))}>
+                      加入候选名单
                     </Button>
                   ) : undefined
                 }
@@ -416,15 +532,33 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
           </Callout>
         )}
       </div>
-      {state.selectedCandidateId && (
+      {done && (
         <>
-          <ComparisonTable
-            head={['对比项', '故障版（信息全知）', '修复版（有限信息）']}
-            rows={buildScoutingComparison(state).map((row) => [row.label, row.fault, row.fixed])}
-          />
-          <div className="scouting-actions">
-            <Button onClick={() => apply(openTransfer)}>完成验证，去迁移</Button>
-          </div>
+          <p className="scouting-target-title">
+            验证目标（{verification.targets.filter((target) => target.met).length} / {verification.targets.length} 达成）
+          </p>
+          <TargetList targets={verification.targets} />
+          {verification.passed ? (
+            <>
+              <ComparisonTable
+                head={['对比项', '故障版（信息全知）', '修复版（有限信息）']}
+                rows={buildScoutingComparison(state).map((row) => [row.label, row.fault, row.fixed])}
+              />
+              <div className="scouting-actions">
+                <Button onClick={() => apply(openTransfer)}>完成验证，去迁移</Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <Callout tone="red" title="验证未达成" icon="⚠">
+                未达成：{verification.failed.map((target) => `${target.label}（${target.actual}，要求 ${target.requirement}）`).join('；')}。
+                点击下面的按钮清空本轮派遣与选择，保留故障证据，回到维修台重新配置模块。
+              </Callout>
+              <div className="scouting-actions">
+                <Button onClick={() => apply(retryVerification)}>回到维修台重新配置</Button>
+              </div>
+            </>
+          )}
         </>
       )}
     </Panel>
@@ -461,10 +595,6 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
     </Panel>
   );
 
-  const selectedCandidate = state.selectedCandidateId ? SCOUT_CANDIDATES.find((item) => item.id === state.selectedCandidateId) ?? null : null;
-  const selectedReport = selectedCandidate ? candidateReport(selectedCandidate, state.knowledge[selectedCandidate.region]) : null;
-  const covered = coveredRegions(state);
-
   const summaryPanel = (
     <Panel title="归档：球探网络" subtitle="这里只展示真实派遣记录与真实报告" tone="green">
       {state.transfer.skipped && (
@@ -473,11 +603,28 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
         </Callout>
       )}
       <div className="scouting-stat-grid">
-        <StatTile label="派遣轮数" value={`${state.round} / ${state.rounds}`} hint="每轮 2 名球探" tone="purple" />
-        <StatTile label="覆盖区域" value={`${covered.length} / ${REGIONS.length}`} hint={covered.map((region) => regionName(region)).join('、') || '没有区域'} tone="green" />
-        <StatTile label="知识度上限" value={`${Math.max(...REGIONS.map((region) => state.knowledge[region.id]))}`} hint="单个区域最高知识度" tone="amber" />
-        <StatTile label="选择" value={selectedCandidate ? selectedCandidate.name : '—'} hint={selectedReport ? `报告：${precisionLabel(selectedReport.precision)}` : ''} tone="neutral" />
+        <StatTile label="派遣轮数" value={`${state.round} / ${state.rounds}`} hint={`每轮 ${scoutsPerRound} 名球探`} tone="purple" />
+        <StatTile
+          label="覆盖区域"
+          value={`${covered.length} / ${REGIONS.length}`}
+          hint={covered.map((region) => regionName(region.id)).join('、') || '没有区域'}
+          tone="green"
+        />
+        <StatTile
+          label="知识度上限"
+          value={`${Math.max(...REGIONS.map((region) => state.knowledge[region.id]))}`}
+          hint="单个区域最高知识度"
+          tone="amber"
+        />
+        <StatTile
+          label="选择"
+          value={selectedCandidate ? selectedCandidate.name : '—'}
+          hint={selectedReport ? `报告：${precisionLabel(selectedReport.precision)}` : ''}
+          tone="neutral"
+        />
       </div>
+      <p className="scouting-target-title">验证目标（全部达成）</p>
+      <TargetList targets={verification.targets} />
       <ComparisonTable
         head={['对比项', '故障版（信息全知）', '修复版（有限信息）']}
         rows={buildScoutingComparison(state).map((row) => [row.label, row.fault, row.fixed])}
@@ -501,16 +648,15 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
       </div>
       {selectedCandidate && selectedReport && (
         <Callout tone="green" title="选择结果（真实能力现在揭晓）">
-          当时报告：{selectedReport.summary}。真实能力：{abilityLines(selectedCandidate)}。报告区间{' '}
-          {selectedReport.range ? `${selectedReport.range.low}–${selectedReport.range.high}` : '未知'}，不要求选中「最强」球员。
+          当时报告：{selectedReport.summary}。真实能力：{abilityLines(selectedCandidate)}。不要求选中「最强」球员。
         </Callout>
       )}
       <RuleList
         items={[
-          { label: '知识度增长', value: `每次考察 +${KNOWLEDGE_GAIN}（上限 ${KNOWLEDGE_MAX}）` },
+          { label: '知识度增长', value: `每次考察 +${knowledgeGain}（上限 ${KNOWLEDGE_MAX}）` },
           { label: '报告精度阈值', value: '<35 模糊 · 35–74 较窄 · ≥75 接近真实（±3）' },
           { label: '轮末处理', value: '球探收回，知识度留在区域里' },
-          { label: '演示参数', value: state.fastPlay ? `快局（${ROUNDS_FAST} 轮）` : `完整（${ROUNDS_NORMAL} 轮）` },
+          { label: '模块组合', value: loadoutNames.length > 0 ? loadoutNames.join('、') : '没有模块' },
         ]}
       />
       <ol className="scouting-summary-list">
@@ -518,14 +664,14 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
           <li key={line}>{line}</li>
         ))}
       </ol>
-      <Callout tone="purple" title="核心问题">
-        我改了哪条规则？它改变了什么选择？又产生了什么代价？
+      <Callout tone="purple" title="写入俱乐部时间线（真实数据）">
+        <ClubUpdateBox update={clubUpdate} />
       </Callout>
       <div className="scouting-actions">
         <Button size="lg" onClick={finishArchive} disabled={!canComplete(state)}>
           完成归档，返回修理铺
         </Button>
-        {!canComplete(state) && <span className="scouting-hint">先完成派遣并选出候选，再答对迁移题，才能归档。</span>}
+        {!canComplete(state) && <span className="scouting-hint">{archiveBlockReason(state)}</span>}
       </div>
     </Panel>
   );
@@ -550,13 +696,28 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
       <Panel title="派遣规则" subtitle="这些数字就是维修后真正生效的规则。">
         <RuleList
           items={[
-            { label: '球探数量', value: `${SCOUTS_PER_ROUND} 名 / 轮` },
+            { label: '球探数量', value: `${scoutsPerRound} 名 / 轮` },
             { label: '区域数量', value: `${REGIONS.length} 个` },
             { label: '同一区域每轮', value: '最多 1 名球探' },
             { label: '每轮结束', value: '球探收回，知识度保留' },
-            { label: '知识度', value: `每次 +${KNOWLEDGE_GAIN}，上限 ${KNOWLEDGE_MAX}` },
+            { label: '知识度', value: `每次 +${knowledgeGain}，上限 ${KNOWLEDGE_MAX}` },
           ]}
         />
+      </Panel>
+      <Panel title="模块状态" subtitle="点击维修台的模块卡即可安装/卸载。">
+        <ul className="scouting-module-status">
+          {SCOUTING_MODULES.map((module) => {
+            const installed = state.loadout[module.slot] === module.id;
+            return (
+              <li key={module.id} className={installed ? 'is-installed' : ''}>
+                <span aria-hidden="true">{installed ? '●' : '○'}</span>
+                <span>{module.name}</span>
+                <span className="scouting-module-tag">{module.correct ? '推荐' : '有副作用'}</span>
+              </li>
+            );
+          })}
+        </ul>
+        {state.attempts > 0 && <p className="scouting-hint">已重新派遣 {state.attempts} 次。</p>}
       </Panel>
       <Panel title="报告精度阈值" subtitle="信息不是免费的，报告也不是一次给全。">
         <RuleList
@@ -568,11 +729,16 @@ export function ScoutingLevel({ level, mode, fastStart, showcaseOptions, savedSt
           ]}
         />
         <p className="scouting-hint">
-          当前已考察：{covered.length > 0 ? covered.map((region) => `${regionName(region)} ${state.knowledge[region]}`).join(' · ') : '还没有区域'}
+          当前已考察：{covered.length > 0 ? covered.map((region) => `${regionName(region.id)} ${state.knowledge[region.id]}`).join(' · ') : '还没有区域'}
         </p>
       </Panel>
+      {(state.phase === 'verify' || state.phase === 'transfer' || state.phase === 'summary') && (
+        <Panel title="验证目标" subtitle="归档前必须全部达成。">
+          <TargetList targets={verification.targets} />
+        </Panel>
+      )}
       <Panel title="操作记录" subtitle="归档只读这份真实日志。">
-        <EventLogList entries={state.eventLog} maxHeight={320} emptyText="还没有操作记录。先完成故障试玩。" />
+        <EventLogList entries={state.eventLog} maxHeight={280} emptyText="还没有操作记录。先完成故障试玩。" />
       </Panel>
     </>
   );

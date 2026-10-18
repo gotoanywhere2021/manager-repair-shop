@@ -65,6 +65,20 @@ export function applyLevelCompletion(
   const mechanism = getLevel(levelId).mechanismId;
   const levelStates = { ...progress.levelStates };
   delete levelStates[levelId];
+  const club = result.clubUpdate
+    ? {
+        ...progress.club,
+        timeline: [
+          ...progress.club.timeline,
+          {
+            levelId,
+            headline: result.clubUpdate.headline,
+            details: result.clubUpdate.details,
+            at: nowIso,
+          },
+        ].slice(-8),
+      }
+    : progress.club;
   const nextProgress: Progress = {
     ...progress,
     completedLevels: [...progress.completedLevels, levelId],
@@ -75,8 +89,8 @@ export function applyLevelCompletion(
     currentLevel: null,
     completedAt: { ...progress.completedAt, [levelId]: nowIso },
     lastSavedAt: nowIso,
+    club,
   };
-  void result;
   return { completed: true, unlockedMechanism: mechanism, progress: nextProgress, demo };
 }
 

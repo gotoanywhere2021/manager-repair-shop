@@ -1,13 +1,27 @@
 /**
- * 关卡二《球探室》的纯规则代码。
+ * 关卡二《球探室》的纯规则代码（v2 可玩性升级版）。
  *
- * 结构接近“工人放置 + 信息成本”：球探数量有限、区域有容量、轮末收回，
- * 知识度决定报告精度。所有随机只来自 engine/rng.ts 的固定种子。
+ * v2 变化：
+ * - 模块池：派遣槽（有限球探 / 广撒网考察）与报告槽（知识度报告 / 只看集锦），
+ *   正确模块 + 有诱惑力但错误/有副作用的模块。
+ * - 验证前可自由安装/卸载；允许不装齐正确模块就开始派遣，知识度与报告会真实变差。
+ * - 验证有明确目标；未达成时给出具体原因，可清空成绩回到维修台重新配置。
+ * - 完成时产出真实俱乐部时间线数据（clubUpdate）。
+ *
+ * 所有随机只来自 engine/rng.ts 的固定种子。
  */
 import { recordEvent } from '../../engine/events';
 import type { RngState } from '../../engine/rng';
 import { createRng, isRngState, nextInt, normalizeSeed, reviveRng } from '../../engine/rng';
-import type { EventLogEntry, EventState, Evidence, GameMode, LevelPhase, ShowcaseOptions } from '../../engine/types';
+import type {
+  ClubUpdate,
+  EventLogEntry,
+  EventState,
+  Evidence,
+  GameMode,
+  LevelPhase,
+  ShowcaseOptions,
+} from '../../engine/types';
 import { PHASE_ORDER, createEvidence } from '../../engine/types';
 
 /* ==========================================================================
@@ -15,19 +29,22 @@ import { PHASE_ORDER, createEvidence } from '../../engine/types';
    ========================================================================== */
 
 export type RegionId = 'local' | 'southern-europe' | 'northern-europe' | 'south-america';
-export type ReportPrecision = 'unknown' | 'wide' | 'narrow' | 'precise';
+export type ReportPrecision = 'unknown' | 'unreliable' | 'wide' | 'narrow' | 'precise';
 
 export interface Region {
   id: RegionId;
   name: string;
   description: string;
+  /** 地图布局用的相对坐标（0~1），只影响展示。 */
+  mapX: number;
+  mapY: number;
 }
 
 export const REGIONS: Region[] = [
-  { id: 'local', name: '本地球市', description: '距离最近，信息最容易核实；候选多，但竞争也最透明。' },
-  { id: 'southern-europe', name: '南欧', description: '技术型球员密集；需要更长时间才能看清真实水平。' },
-  { id: 'northern-europe', name: '北欧', description: '身体与纪律出色；比赛节奏与本地差异大。' },
-  { id: 'south-america', name: '南美', description: '天赋上限高，但报告最难核实，适应风险也最大。' },
+  { id: 'local', name: '本地球市', description: '距离最近，信息最容易核实；候选多，但竞争也最透明。', mapX: 0.28, mapY: 0.32 },
+  { id: 'southern-europe', name: '南欧', description: '技术型球员密集；需要更长时间才能看清真实水平。', mapX: 0.68, mapY: 0.24 },
+  { id: 'northern-europe', name: '北欧', description: '身体与纪律出色；比赛节奏与本地差异大。', mapX: 0.3, mapY: 0.76 },
+  { id: 'south-america', name: '南美', description: '天赋上限高，但报告最难核实，适应风险也最大。', mapX: 0.76, mapY: 0.72 },
 ];
 
 const REGION_IDS: RegionId[] = ['local', 'southern-europe', 'northern-europe', 'south-america'];
@@ -109,20 +126,122 @@ export function abilityLines(candidate: ScoutCandidate): string {
 }
 
 /* ==========================================================================
-   知识度与报告精度
+   模块池：派遣槽与报告槽
    ========================================================================== */
 
-/** 每轮被考察一次，区域知识度 +40（两轮达到 80，进入“接近真实”档）。 */
-export const KNOWLEDGE_GAIN = 40;
+export type DispatchSlotModuleId = 'limited-scouts' | 'wide-net';
+export type ReportSlotModuleId = 'knowledge-reports' | 'highlights';
+export type ScoutingModuleId = DispatchSlotModuleId | ReportSlotModuleId;
+export type ScoutingSlot = 'dispatch' | 'report';
+
+export interface ScoutingLoadout {
+  dispatch: DispatchSlotModuleId | null;
+  report: ReportSlotModuleId | null;
+}
+
+export interface ScoutingModuleDefinition {
+  id: ScoutingModuleId;
+  slot: ScoutingSlot;
+  name: string;
+  englishName: string;
+  description: string;
+  /** 诚实的副作用说明，直接显示在模块卡上。 */
+  sideEffect: string;
+  effect: string;
+  correct: boolean;
+}
+
+export const SCOUTING_MODULES: ScoutingModuleDefinition[] = [
+  {
+    id: 'limited-scouts',
+    slot: 'dispatch',
+    name: '有限球探',
+    englishName: 'Limited Scouts',
+    description: '只有 2 名球探，可以派往不同区域；每个区域每轮只能安排一名球探；回合结束收回。',
+    sideEffect: '区域越多，单个区域的知识增长越慢；后手区域可能错过窗口。',
+    effect: '每轮 2 名球探，每次考察 +35 知识度。',
+    correct: true,
+  },
+  {
+    id: 'wide-net',
+    slot: 'dispatch',
+    name: '广撒网考察',
+    englishName: 'Wide Net',
+    description: '一轮派出 3 名球探，覆盖更多区域，看起来很划算。',
+    sideEffect: '每个区域每次只 +20 知识度；摊子铺得越大，单个区域越看不清。',
+    effect: '每轮 3 名球探，但每次考察只 +20 知识度。',
+    correct: false,
+  },
+  {
+    id: 'knowledge-reports',
+    slot: 'report',
+    name: '知识度报告',
+    englishName: 'Knowledge Reports',
+    description: '知识度从低到高逐级解锁属性区间：低知识度只给模糊评价，高知识度才接近真实能力。',
+    sideEffect: '报告看起来「很难用」是正常的；它保护你免于被虚假的精确数字骗到。',
+    effect: '报告区间随区域知识度收窄（模糊 ±18 / 较窄 ±9 / 接近真实 ±3）。',
+    correct: true,
+  },
+  {
+    id: 'highlights',
+    slot: 'report',
+    name: '只看集锦',
+    englishName: 'Highlight Reels',
+    description: '不派球探也能立刻拿到一份报告，剪辑里的每个动作都很漂亮。',
+    sideEffect: '报告永远只有 ±25 的不可靠区间；后续考察获得的知识度减半。',
+    effect: '立即显示全部候选的 ±25 报告，但报告不随知识度变准，考察收益减半。',
+    correct: false,
+  },
+];
+
+export const KNOWLEDGE_GAIN = 35;
+export const WIDE_NET_GAIN = 20;
+export const WIDE_NET_SCOUTS = 3;
+export const FALLBACK_SCOUTS = 1;
 export const KNOWLEDGE_MAX = 100;
 export const SCOUTS_PER_ROUND = 2;
 export const ROUNDS_NORMAL = 2;
 export const ROUNDS_FAST = 1;
 
+export const HIGHLIGHTS_HALF_WIDTH = 25;
+export const NO_REPORT_HALF_WIDTH = 18;
+
 /** 阈值：<35 只给很宽的模糊评价；35–74 较窄；≥75 接近真实（±3）。 */
 export const PRECISION_WIDE_MAX = 34;
 export const PRECISION_NARROW_MAX = 74;
 export const PRECISION_PRECISE_MIN = 75;
+
+export function findScoutingModule(id: ScoutingModuleId): ScoutingModuleDefinition {
+  const module = SCOUTING_MODULES.find((item) => item.id === id);
+  if (!module) throw new Error(`未知球探模块：${id}`);
+  return module;
+}
+
+export function loadoutModuleNames(loadout: ScoutingLoadout): string[] {
+  const names: string[] = [];
+  if (loadout.dispatch) names.push(findScoutingModule(loadout.dispatch).name);
+  if (loadout.report) names.push(findScoutingModule(loadout.report).name);
+  return names;
+}
+
+export function moduleScoutsPerRound(state: Pick<ScoutingState, 'loadout'>): number {
+  if (state.loadout.dispatch === 'limited-scouts') return SCOUTS_PER_ROUND;
+  if (state.loadout.dispatch === 'wide-net') return WIDE_NET_SCOUTS;
+  return FALLBACK_SCOUTS;
+}
+
+/** 当前模块组合下，每次考察实际获得的知识度。 */
+export function moduleKnowledgeGain(state: Pick<ScoutingState, 'loadout'>): number {
+  let gain = 0;
+  if (state.loadout.dispatch === 'limited-scouts') gain = KNOWLEDGE_GAIN;
+  else if (state.loadout.dispatch === 'wide-net') gain = WIDE_NET_GAIN;
+  if (state.loadout.report === 'highlights') gain = Math.floor(gain / 2);
+  return gain;
+}
+
+/* ==========================================================================
+   知识度与报告精度
+   ========================================================================== */
 
 export function reportPrecision(knowledge: number): ReportPrecision {
   if (knowledge <= 0) return 'unknown';
@@ -134,6 +253,7 @@ export function reportPrecision(knowledge: number): ReportPrecision {
 
 export function precisionLabel(precision: ReportPrecision): string {
   if (precision === 'unknown') return '未知';
+  if (precision === 'unreliable') return '不可靠';
   if (precision === 'wide') return '模糊';
   if (precision === 'narrow') return '较窄';
   return '接近真实';
@@ -141,27 +261,44 @@ export function precisionLabel(precision: ReportPrecision): string {
 
 export function precisionDescription(precision: ReportPrecision): string {
   if (precision === 'unknown') return '未考察过，只确认名字与位置。';
+  if (precision === 'unreliable') return '集锦报告：±25 区间，不会随考察变准。';
   if (precision === 'wide') return '知识度不足 35：范围很宽的模糊评价。';
   if (precision === 'narrow') return '知识度 35–74：区间缩小，但仍不能当精确值用。';
   return '知识度 75 以上：接近真实值（±3），仍不是精确值。';
 }
 
-export function gainKnowledge(knowledge: number): number {
-  return Math.min(KNOWLEDGE_MAX, Math.max(0, Math.round(knowledge + KNOWLEDGE_GAIN)));
+/** 报告质量排序，验证目标用它判断「至少较窄」。 */
+export function precisionRank(precision: ReportPrecision): number {
+  if (precision === 'unknown') return 0;
+  if (precision === 'unreliable') return 1;
+  if (precision === 'wide') return 2;
+  if (precision === 'narrow') return 3;
+  return 4;
 }
 
-const HALF_WIDTH: Record<Exclude<ReportPrecision, 'unknown'>, number> = { wide: 18, narrow: 9, precise: 3 };
+export function gainKnowledge(knowledge: number, gain: number = KNOWLEDGE_GAIN): number {
+  return Math.min(KNOWLEDGE_MAX, Math.max(0, Math.round(knowledge + gain)));
+}
+
+const HALF_WIDTH: Record<Exclude<ReportPrecision, 'unknown' | 'unreliable'>, number> = { wide: 18, narrow: 9, precise: 3 };
 
 export interface AbilityRange {
   low: number;
   high: number;
 }
 
-/** 报告区间。低知识度只会得到更宽的区间；任何精度下都不会显示唯一精确值。 */
+/** 纯知识度规则的报告区间：任何精度下都不会显示唯一精确值。 */
 export function reportRange(overall: number, knowledge: number): AbilityRange | null {
   const precision = reportPrecision(knowledge);
-  if (precision === 'unknown') return null;
+  if (precision === 'unknown' || precision === 'unreliable') return null;
   const half = HALF_WIDTH[precision];
+  return {
+    low: Math.max(1, overall - half),
+    high: Math.min(99, overall + half),
+  };
+}
+
+function rangeAround(overall: number, half: number): AbilityRange {
   return {
     low: Math.max(1, overall - half),
     high: Math.min(99, overall + half),
@@ -176,6 +313,7 @@ export interface CandidateReport {
   summary: string;
 }
 
+/** 纯知识度规则（默认假设装了知识度报告）。保留给规则测试与报告说明。 */
 export function candidateReport(candidate: ScoutCandidate, knowledge: number): CandidateReport {
   const precision = reportPrecision(knowledge);
   if (precision === 'unknown') {
@@ -187,12 +325,50 @@ export function candidateReport(candidate: ScoutCandidate, knowledge: number): C
       summary: '未知：还没有球探考察过这个区域。',
     };
   }
-  const overall = trueOverall(candidate);
-  const range = reportRange(overall, knowledge);
+  const range = reportRange(trueOverall(candidate), knowledge);
   const summary = range
     ? `${precisionLabel(precision)}区间：综合能力 ${range.low}–${range.high}（知识度 ${knowledge}）`
     : '未知';
   return { candidateId: candidate.id, precision, knowledge, range, summary };
+}
+
+/** 当前模块组合下真正显示的报告：错误模块会真实影响精度。 */
+export function candidateReportWithModules(
+  candidate: ScoutCandidate,
+  knowledge: number,
+  loadout: ScoutingLoadout,
+): CandidateReport {
+  const overall = trueOverall(candidate);
+  if (loadout.report === 'highlights') {
+    const range = rangeAround(overall, HIGHLIGHTS_HALF_WIDTH);
+    return {
+      candidateId: candidate.id,
+      precision: 'unreliable',
+      knowledge,
+      range,
+      summary: `集锦报告（±25，不可靠）：综合能力 ${range.low}–${range.high}；后续考察收益减半。`,
+    };
+  }
+  if (loadout.report === 'knowledge-reports') {
+    return candidateReport(candidate, knowledge);
+  }
+  if (knowledge <= 0) {
+    return {
+      candidateId: candidate.id,
+      precision: 'unknown',
+      knowledge,
+      range: null,
+      summary: '未知：区域还没有被考察，也没有安装知识度报告。',
+    };
+  }
+  const range = rangeAround(overall, NO_REPORT_HALF_WIDTH);
+  return {
+    candidateId: candidate.id,
+    precision: 'wide',
+    knowledge,
+    range,
+    summary: `未安装知识度报告：区间不会随考察收窄（知识度 ${knowledge}，按 ±18 估算）。`,
+  };
 }
 
 /* ==========================================================================
@@ -204,10 +380,11 @@ export interface ScoutingRoundRecord {
   regions: RegionId[];
   knowledgeBefore: Record<RegionId, number>;
   knowledgeAfter: Record<RegionId, number>;
+  knowledgeGain: number;
 }
 
 export interface ScoutingState {
-  version: 1;
+  version: 2;
   phase: LevelPhase;
   mode: GameMode;
   fastPlay: boolean;
@@ -221,9 +398,11 @@ export interface ScoutingState {
   rounds: number;
   dispatches: RegionId[];
   history: ScoutingRoundRecord[];
+  loadout: ScoutingLoadout;
+  /** 第几次验证（0 表示还没重试过）。 */
+  attempts: number;
   fault: { inspected: string[]; picked: string | null; done: boolean };
   diagnose: { resolved: boolean };
-  installed: { limitedScouts: boolean; knowledgeReports: boolean };
   selectedCandidateId: string | null;
   transfer: { resolved: boolean; skipped: boolean };
   evidence: Evidence;
@@ -243,27 +422,95 @@ function initialKnowledge(): Record<RegionId, number> {
 
 export function scoutsAvailable(state: ScoutingState): number {
   if (state.phase !== 'verify' || state.round >= state.rounds) return 0;
-  return Math.max(0, SCOUTS_PER_ROUND - state.dispatches.length);
-}
-
-export function reportRounds(state: ScoutingState): number {
-  return state.rounds;
+  return Math.max(0, moduleScoutsPerRound(state) - state.dispatches.length);
 }
 
 export function isSelectingCandidate(state: ScoutingState): boolean {
   return state.phase === 'verify' && state.round >= state.rounds && state.selectedCandidateId === null;
 }
 
-export function coveredRegions(state: ScoutingState): RegionId[] {
+/** 派遣轮次已经结束并且已经选出候选（进入迁移/归档后仍然成立）。 */
+export function isVerificationDone(state: ScoutingState): boolean {
+  return state.round >= state.rounds && state.selectedCandidateId !== null;
+}
+
+export function coveredRegions(state: Pick<ScoutingState, 'knowledge'>): RegionId[] {
   return REGION_IDS.filter((region) => state.knowledge[region] > 0);
 }
 
-export function canEnterVerify(state: ScoutingState): boolean {
-  return (
-    state.phase === 'repair' &&
-    state.installed.limitedScouts &&
-    state.installed.knowledgeReports
-  );
+/* ==========================================================================
+   验证目标
+   ========================================================================== */
+
+export const SCOUTING_TARGETS = {
+  coverageMin: 2,
+  knowledgeThreshold: 35,
+  /** 选中候选的报告至少达到这一档。 */
+  reportPrecisionMin: 'narrow' as const,
+};
+
+export type ScoutingTargetId = 'modules' | 'coverage' | 'report';
+
+export interface ScoutingTargetCheck {
+  id: ScoutingTargetId;
+  label: string;
+  requirement: string;
+  actual: string;
+  met: boolean;
+}
+
+export interface ScoutingVerification {
+  done: boolean;
+  passed: boolean;
+  targets: ScoutingTargetCheck[];
+  failed: ScoutingTargetCheck[];
+  covered: RegionId[];
+}
+
+export function evaluateScoutingVerification(state: ScoutingState): ScoutingVerification {
+  const done = isVerificationDone(state);
+  const covered = REGION_IDS.filter((region) => state.knowledge[region] >= SCOUTING_TARGETS.knowledgeThreshold);
+  const selected = state.selectedCandidateId ? findCandidate(state.selectedCandidateId) : null;
+  const selectedReport = selected
+    ? candidateReportWithModules(selected, state.knowledge[selected.region], state.loadout)
+    : null;
+  const modulesCorrect = state.loadout.dispatch === 'limited-scouts' && state.loadout.report === 'knowledge-reports';
+  const installedNames = loadoutModuleNames(state.loadout);
+  const reportMet =
+    selected !== null &&
+    selectedReport !== null &&
+    precisionRank(selectedReport.precision) >= precisionRank(SCOUTING_TARGETS.reportPrecisionMin);
+
+  const targets: ScoutingTargetCheck[] = [
+    {
+      id: 'modules',
+      label: '维修模块正确',
+      requirement: '安装有限球探 + 知识度报告，且没有错误模块',
+      actual: installedNames.length > 0 ? `已安装：${installedNames.join('、')}` : '没有安装任何模块',
+      met: modulesCorrect,
+    },
+    {
+      id: 'coverage',
+      label: '区域覆盖',
+      requirement: `至少 ${SCOUTING_TARGETS.coverageMin} 个区域知识度 ≥ ${SCOUTING_TARGETS.knowledgeThreshold}`,
+      actual:
+        covered.length > 0
+          ? `${covered.length} 个区域达标：${covered.map((region) => `${regionName(region)} ${state.knowledge[region]}`).join('、')}`
+          : '没有区域达标',
+      met: covered.length >= SCOUTING_TARGETS.coverageMin,
+    },
+    {
+      id: 'report',
+      label: '候选报告可信',
+      requirement: '选中候选的报告精度至少「较窄」',
+      actual: selected
+        ? `${selected.name}：${selectedReport ? precisionLabel(selectedReport.precision) : '未知'}（${regionName(selected.region)}知识度 ${state.knowledge[selected.region]}）`
+        : '还没有选择候选',
+      met: reportMet,
+    },
+  ];
+  const failed = targets.filter((target) => !target.met);
+  return { done, passed: done && failed.length === 0, targets, failed, covered };
 }
 
 /* ==========================================================================
@@ -299,9 +546,8 @@ export function startFaultPlay(state: ScoutingState): ScoutingState {
 
 export function inspectCandidate(state: ScoutingState, candidateId: string): ScoutingState {
   if (state.phase !== 'faultPlay' || state.fault.done) return state;
-  if (!findCandidate(candidateId) || state.fault.inspected.includes(candidateId)) return state;
   const candidate = findCandidate(candidateId);
-  if (!candidate) return state;
+  if (!candidate || state.fault.inspected.includes(candidateId)) return state;
   const next: ScoutingState = {
     ...state,
     fault: { ...state.fault, inspected: [...state.fault.inspected, candidateId] },
@@ -356,48 +602,80 @@ export function resolveDiagnose(state: ScoutingState): ScoutingState {
     label: '诊断正确：球探数量有限，信息应该逐步变清楚',
     before: { resolved: 'false' },
     after: { resolved: 'true' },
-    note: '下一步安装有限球探与知识度报告。',
+    note: '下一步去维修台：4 个模块自由安装/卸载，再决定要不要直接开始派遣。',
   });
 }
 
 export function startRepair(state: ScoutingState): ScoutingState {
   if (state.phase !== 'diagnose' || !state.diagnose.resolved) return state;
-  const next: ScoutingState = { ...state, phase: 'repair' };
+  const next: ScoutingState = {
+    ...state,
+    phase: 'repair',
+    round: 0,
+    knowledge: initialKnowledge(),
+    dispatches: [],
+    history: [],
+    selectedCandidateId: null,
+  };
   return withEvent(next, 'repair', {
     action: 'start-repair',
-    label: '开始维修：安装有限球探与知识度报告',
+    label: '开始维修：模块池自由配置',
     before: { phase: 'diagnose' },
     after: { phase: 'repair' },
-    note: '两个模块都装上，才能开始派遣。',
+    note: '有限球探负责派人，知识度报告负责把信息变清楚；错误模块也能装，但要承担真实副作用。',
   });
 }
 
+/* ---------- 维修台的模块操作（仅 repair 阶段） ---------- */
+
+export function installScoutingModule(state: ScoutingState, id: ScoutingModuleId): ScoutingState {
+  if (state.phase !== 'repair') return state;
+  if (!SCOUTING_MODULES.some((item) => item.id === id)) return state;
+  const module = findScoutingModule(id);
+  if (state.loadout[module.slot] === id) return state;
+  const previous = state.loadout[module.slot];
+  const next: ScoutingState = { ...state, loadout: { ...state.loadout, [module.slot]: id } as ScoutingLoadout };
+  return withEvent(next, 'repair', {
+    action: `install-module-${id}`,
+    label: `安装模块：${module.name}`,
+    before: { slot: module.slot, installed: previous ?? '空' },
+    after: { slot: module.slot, installed: module.name, effect: module.effect },
+    delta: module.correct ? '正确模块' : '错误模块（有副作用）',
+    note: module.sideEffect,
+  });
+}
+
+export function uninstallScoutingModule(state: ScoutingState, id: ScoutingModuleId): ScoutingState {
+  if (state.phase !== 'repair') return state;
+  const module = findScoutingModule(id);
+  if (state.loadout[module.slot] !== id) return state;
+  const next: ScoutingState = { ...state, loadout: { ...state.loadout, [module.slot]: null } as ScoutingLoadout };
+  return withEvent(next, 'repair', {
+    action: `uninstall-module-${id}`,
+    label: `卸载模块：${module.name}`,
+    before: { slot: module.slot, installed: module.name },
+    after: { slot: module.slot, installed: '空' },
+  });
+}
+
+export function toggleScoutingModule(state: ScoutingState, id: ScoutingModuleId): ScoutingState {
+  if (state.phase !== 'repair') return state;
+  const module = findScoutingModule(id);
+  return state.loadout[module.slot] === id ? uninstallScoutingModule(state, id) : installScoutingModule(state, id);
+}
+
+/** 兼容旧测试/调用：安装正确的有限球探。 */
 export function installLimitedScouts(state: ScoutingState): ScoutingState {
-  if (state.phase !== 'repair' || state.installed.limitedScouts) return state;
-  const next: ScoutingState = { ...state, installed: { ...state.installed, limitedScouts: true } };
-  return withEvent(next, 'repair', {
-    action: 'install-limited-scouts',
-    label: '安装有限球探：2 名球探、4 个区域、轮末收回',
-    before: { limitedScouts: 'false' },
-    after: { limitedScouts: 'true', scouts: SCOUTS_PER_ROUND },
-    note: '每轮每名球探只能去一个区域；同一区域同一轮只能派 1 人。',
-  });
+  return installScoutingModule(state, 'limited-scouts');
 }
 
+/** 兼容旧测试/调用：安装正确的知识度报告。 */
 export function installKnowledgeReports(state: ScoutingState): ScoutingState {
-  if (state.phase !== 'repair' || state.installed.knowledgeReports) return state;
-  const next: ScoutingState = { ...state, installed: { ...state.installed, knowledgeReports: true } };
-  return withEvent(next, 'repair', {
-    action: 'install-knowledge-reports',
-    label: '安装知识度报告：考察让信息一轮轮变清楚',
-    before: { knowledgeReports: 'false' },
-    after: { knowledgeReports: 'true', gain: KNOWLEDGE_GAIN },
-    note: '区域知识度 0→100；低于 35 只有模糊区间，35–74 缩小区间，75 以上才接近真实值。',
-  });
+  return installScoutingModule(state, 'knowledge-reports');
 }
 
 export function startVerify(state: ScoutingState): ScoutingState {
-  if (!canEnterVerify(state)) return state;
+  if (state.phase !== 'repair') return state;
   const next: ScoutingState = {
     ...state,
     phase: 'verify',
@@ -409,49 +687,49 @@ export function startVerify(state: ScoutingState): ScoutingState {
   };
   return withEvent(next, 'verify', {
     action: 'start-verify',
-    label: `开始派遣：${state.rounds} 轮，每轮 ${SCOUTS_PER_ROUND} 名球探`,
-    before: { phase: 'repair' },
-    after: { phase: 'verify', rounds: state.rounds, scouts: SCOUTS_PER_ROUND },
-    note: '轮末球探收回，知识度留在区域里；同一区域每轮最多 1 人。',
+    label: `开始派遣：${state.rounds} 轮，每轮 ${moduleScoutsPerRound(state)} 名球探（第 ${state.attempts + 1} 次尝试）`,
+    before: { phase: 'repair', modules: loadoutModuleNames(state.loadout).join('、') || '无' },
+    after: { phase: 'verify', rounds: state.rounds, scouts: moduleScoutsPerRound(state) },
+    note: '轮末球探收回，知识度留在区域里；目标会在选完候选后逐条判定。',
   });
 }
 
 export function canAssignScout(state: ScoutingState, region: unknown): region is RegionId {
-  if (state.phase !== 'verify') return false;
-  if (!state.installed.limitedScouts || !state.installed.knowledgeReports) return false;
-  if (state.round >= state.rounds) return false;
+  if (state.phase !== 'verify' || state.round >= state.rounds) return false;
   if (!isRegionId(region)) return false;
   if (state.dispatches.includes(region)) return false;
-  return state.dispatches.length < SCOUTS_PER_ROUND;
+  return state.dispatches.length < moduleScoutsPerRound(state);
 }
 
 export function assignScout(state: ScoutingState, region: RegionId): ScoutingState {
   if (!canAssignScout(state, region)) return state;
+  const perRound = moduleScoutsPerRound(state);
   const next: ScoutingState = { ...state, dispatches: [...state.dispatches, region] };
   return withEvent(next, 'verify', {
     action: 'assign-scout',
     label: `派遣球探：${regionName(region)}`,
-    before: { scoutsAvailable: SCOUTS_PER_ROUND - state.dispatches.length, round: state.round + 1 },
-    after: { scoutsAvailable: SCOUTS_PER_ROUND - next.dispatches.length, round: state.round + 1 },
-    delta: `剩余球探 ${SCOUTS_PER_ROUND - next.dispatches.length} 名`,
+    before: { scoutsAvailable: perRound - state.dispatches.length, round: state.round + 1 },
+    after: { scoutsAvailable: perRound - next.dispatches.length, round: state.round + 1 },
+    delta: `剩余球探 ${perRound - next.dispatches.length} 名`,
     note: '球探派出后不算完成，轮末才收回；同一轮不能再来这个区域。',
   });
 }
 
 export function endRound(state: ScoutingState): ScoutingState {
-  if (state.phase !== 'verify') return state;
-  if (state.round >= state.rounds) return state;
-  if (state.dispatches.length !== SCOUTS_PER_ROUND) return state;
+  if (state.phase !== 'verify' || state.round >= state.rounds) return state;
+  if (state.dispatches.length !== moduleScoutsPerRound(state)) return state;
+  const gain = moduleKnowledgeGain(state);
   const before = { ...state.knowledge };
   const after = { ...state.knowledge };
   for (const region of state.dispatches) {
-    after[region] = gainKnowledge(after[region]);
+    after[region] = gainKnowledge(after[region], gain);
   }
   const record: ScoutingRoundRecord = {
     round: state.round + 1,
     regions: [...state.dispatches],
     knowledgeBefore: before,
     knowledgeAfter: after,
+    knowledgeGain: gain,
   };
   const next: ScoutingState = {
     ...state,
@@ -465,7 +743,10 @@ export function endRound(state: ScoutingState): ScoutingState {
     label: `第 ${record.round} 轮结束：球探收回`,
     before: { round: state.round, ...before },
     after: { round: next.round, ...after },
-    delta: state.dispatches.map((region) => `${regionName(region)} +${KNOWLEDGE_GAIN}`).join(' · '),
+    delta:
+      gain > 0
+        ? state.dispatches.map((region) => `${regionName(region)} +${gain}`).join(' · ')
+        : '没有球探网络：本轮没有获得知识度',
     note: '同一区域每轮最多被考察一次；知识度越高，报告区间越窄。',
   });
 }
@@ -474,15 +755,17 @@ export function selectCandidate(state: ScoutingState, candidateId: string): Scou
   if (state.phase !== 'verify') return state;
   if (state.round < state.rounds) return state;
   if (state.selectedCandidateId !== null) return state;
-  if (!state.installed.limitedScouts || !state.installed.knowledgeReports) return state;
   const candidate = findCandidate(candidateId);
   if (!candidate) return state;
-  const report = candidateReport(candidate, state.knowledge[candidate.region]);
+  const report = candidateReportWithModules(candidate, state.knowledge[candidate.region], state.loadout);
   const next: ScoutingState = {
     ...state,
     selectedCandidateId: candidateId,
-    evidence: { ...state.evidence, operatedMechanic: true },
   };
+  const verification = evaluateScoutingVerification(next);
+  if (verification.passed) {
+    next.evidence = { ...next.evidence, operatedMechanic: true };
+  }
   return withEvent(next, 'verify', {
     action: 'select-candidate',
     label: `根据报告加入候选名单：${candidate.name}`,
@@ -493,8 +776,36 @@ export function selectCandidate(state: ScoutingState, candidateId: string): Scou
   });
 }
 
+/** 验证未达成后回到维修台：清空本轮派遣与选择，保留故障证据与模块配置以便调整。 */
+export function retryVerification(state: ScoutingState): ScoutingState {
+  if (state.phase !== 'verify' || !isVerificationDone(state)) return state;
+  const verification = evaluateScoutingVerification(state);
+  if (verification.passed) return state;
+  const next: ScoutingState = {
+    ...state,
+    phase: 'repair',
+    round: 0,
+    knowledge: initialKnowledge(),
+    dispatches: [],
+    history: [],
+    selectedCandidateId: null,
+    attempts: state.attempts + 1,
+  };
+  return withEvent(next, 'repair', {
+    action: 'retry-verification',
+    label: '验证未达成：回到维修台重新配置',
+    before: { phase: 'verify', round: state.round, covered: verification.covered.length },
+    after: { phase: 'repair', attempts: next.attempts },
+    delta: `未达成 ${verification.failed.length} 项目标`,
+    note: `未达成：${verification.failed
+      .map((target) => `${target.label}（${target.actual}，要求 ${target.requirement}）`)
+      .join('；')}。本轮派遣成绩与选择已清空。`,
+  });
+}
+
 export function openTransfer(state: ScoutingState): ScoutingState {
-  if (state.phase !== 'verify' || state.selectedCandidateId === null) return state;
+  if (state.phase !== 'verify') return state;
+  if (!evaluateScoutingVerification(state).passed) return state;
   const next: ScoutingState = { ...state, phase: 'transfer' };
   return withEvent(next, 'transfer', {
     action: 'open-transfer',
@@ -549,13 +860,33 @@ export function openSummary(state: ScoutingState): ScoutingState {
   });
 }
 
+export type CompleteBlocker = 'not-summary' | 'already-complete' | 'verify-unmet' | 'transfer-missing' | 'prereq-missing';
+
+export function archiveBlocker(state: ScoutingState): CompleteBlocker | null {
+  if (state.phase !== 'summary') return 'not-summary';
+  if (state.completed) return 'already-complete';
+  if (!evaluateScoutingVerification(state).passed) return 'verify-unmet';
+  if (state.mode !== 'showcase' && (!state.fault.done || !state.diagnose.resolved)) return 'prereq-missing';
+  if (state.mode !== 'showcase' && !state.transfer.resolved) return 'transfer-missing';
+  return null;
+}
+
 export function canComplete(state: ScoutingState): boolean {
-  if (state.phase !== 'summary' || state.completed) return false;
-  if (!state.installed.limitedScouts || !state.installed.knowledgeReports) return false;
-  if (state.round < state.rounds) return false;
-  if (state.selectedCandidateId === null) return false;
-  if (state.mode === 'showcase') return true;
-  return state.fault.done && state.diagnose.resolved && state.transfer.resolved;
+  return archiveBlocker(state) === null;
+}
+
+export function archiveBlockReason(state: ScoutingState): string {
+  const blocker = archiveBlocker(state);
+  if (blocker === 'already-complete') return '已经归档完成，不会重复结算。';
+  if (blocker === 'verify-unmet') {
+    const failed = evaluateScoutingVerification(state).failed;
+    return `验证目标未达成：${failed
+      .map((target) => `${target.label}（${target.actual}，要求 ${target.requirement}）`)
+      .join('；')}。请回到维修台重新配置。`;
+  }
+  if (blocker === 'transfer-missing') return '迁移题还没有答对，完成迁移后才能归档。';
+  if (blocker === 'prereq-missing') return '还没有完成故障试玩与诊断，不能直接归档。';
+  return '还没有完成派遣与选择，暂时不能归档。';
 }
 
 export function completeArchive(state: ScoutingState): ScoutingState {
@@ -582,7 +913,7 @@ export function buildCandidateReports(state: ScoutingState): CandidateReport[] {
   return state.candidateOrder
     .map((id) => findCandidate(id))
     .filter((candidate): candidate is ScoutCandidate => candidate !== null)
-    .map((candidate) => candidateReport(candidate, state.knowledge[candidate.region]));
+    .map((candidate) => candidateReportWithModules(candidate, state.knowledge[candidate.region], state.loadout));
 }
 
 export interface ScoutingComparisonRow {
@@ -594,18 +925,23 @@ export interface ScoutingComparisonRow {
 export function buildScoutingComparison(state: ScoutingState): ScoutingComparisonRow[] {
   const faultPicked = state.fault.picked ? findCandidate(state.fault.picked) : null;
   const selected = state.selectedCandidateId ? findCandidate(state.selectedCandidateId) : null;
-  const selectedReport = selected ? candidateReport(selected, state.knowledge[selected.region]) : null;
-  const covered = coveredRegions(state).map((region) => regionName(region)).join('、') || '没有区域';
+  const selectedReport = selected
+    ? candidateReportWithModules(selected, state.knowledge[selected.region], state.loadout)
+    : null;
+  const covered = coveredRegions(state);
   return [
     {
       label: '信息范围',
       fault: '5 名候选的全部精确属性，一点即见',
-      fixed: `${covered} 有报告；其余区域仍是「未知」`,
+      fixed:
+        covered.length > 0
+          ? `${covered.map((region) => regionName(region)).join('、')} 有报告；其余区域仍是「未知」`
+          : '没有区域有报告',
     },
     {
       label: '考察成本',
       fault: '0 次派遣、0 轮等待',
-      fixed: `${state.round} 轮 × ${SCOUTS_PER_ROUND} 名球探 = ${state.round * SCOUTS_PER_ROUND} 次区域考察`,
+      fixed: `${state.round} 轮 × ${moduleScoutsPerRound(state)} 名球探 = ${state.round * moduleScoutsPerRound(state)} 次区域考察（每次 +${moduleKnowledgeGain(state)}）`,
     },
     {
       label: '选择依据',
@@ -622,21 +958,54 @@ export function buildScoutingComparison(state: ScoutingState): ScoutingCompariso
 
 export function buildArchiveSummary(state: ScoutingState): string[] {
   const selected = state.selectedCandidateId ? findCandidate(state.selectedCandidateId) : null;
-  const selectedReport = selected ? candidateReport(selected, state.knowledge[selected.region]) : null;
-  const covered = coveredRegions(state).map((region) => regionName(region));
+  const selectedReport = selected
+    ? candidateReportWithModules(selected, state.knowledge[selected.region], state.loadout)
+    : null;
+  const covered = coveredRegions(state).map((region) => `${regionName(region)} ${state.knowledge[region]}`);
+  const verified = evaluateScoutingVerification(state);
   return [
     '改了哪条规则：把「点一下就看到全部精确属性」改成「2 名球探、每轮最多考察 2 个区域、同一区域每轮 1 人、轮末收回」，并让区域知识度决定报告精度。',
     `改变了什么选择：先派球探去哪些区域、接受报告从模糊区间逐轮变窄，而不是等一个精确数字。最终选了 ${
       selected ? `${selected.name}（${selected.position}）` : '一名候选'
     }${selectedReport ? `，依据是${selectedReport.summary}` : ''}。`,
-    `产生了什么代价：${state.rounds} 轮最多只能覆盖 ${state.round * SCOUTS_PER_ROUND} 个区域次（实际考察：${
+    `产生了什么代价：${state.rounds} 轮最多只能覆盖 ${state.round * moduleScoutsPerRound(state)} 个区域次（实际考察：${
       covered.join('、') || '没有区域'
-    }），没考察的区域只能标「未知」；知识度不足时必须接受更宽的区间。`,
+    }），知识度不足的区域只能接受更宽区间；验证目标 ${verified.targets.filter((target) => target.met).length}/${verified.targets.length} 项达成。`,
   ];
 }
 
-export function buildCompletionResult(state: ScoutingState): { evidence: Evidence; summary: string[] } {
-  return { evidence: { ...state.evidence }, summary: buildArchiveSummary(state) };
+/* ==========================================================================
+   俱乐部时间线：只写真实数据
+   ========================================================================== */
+
+export function buildClubUpdate(state: ScoutingState): ClubUpdate {
+  const selected = state.selectedCandidateId ? findCandidate(state.selectedCandidateId) : null;
+  const selectedReport = selected
+    ? candidateReportWithModules(selected, state.knowledge[selected.region], state.loadout)
+    : null;
+  const covered = coveredRegions(state);
+  const coverageText = covered.map((region) => `${regionName(region)} ${state.knowledge[region]}`).join('、') || '没有区域';
+  const rangeText = selectedReport?.range ? `${selectedReport.range.low}–${selectedReport.range.high}` : '未知';
+  return {
+    headline: `球探网络上线索：${covered.length} 个区域有报告，${
+      selected ? `${selected.name} 以「${selectedReport ? precisionLabel(selectedReport.precision) : '未知'}」报告入选` : '候选名单待定'
+    }`,
+    details: [
+      `派遣记录：${state.round} 轮 × ${moduleScoutsPerRound(state)} 名球探，实际考察 ${coverageText}；每次考察 +${moduleKnowledgeGain(state)} 知识度。`,
+      `候选报告：${selected ? `${selected.name}（${selected.position}，${regionName(selected.region)}）区间 ${rangeText}，精度「${selectedReport ? precisionLabel(selectedReport.precision) : '未知'}」` : '还没有选择候选'}。`,
+      `真实能力（选完才揭晓）：${selected ? `${selected.name} 总评 ${trueOverall(selected)}` : '未知'}；未考察区域保持「未知」。`,
+      `验证目标全部达成：至少 ${SCOUTING_TARGETS.coverageMin} 个区域知识度 ≥ ${SCOUTING_TARGETS.knowledgeThreshold}、候选报告精度 ≥「${precisionLabel(SCOUTING_TARGETS.reportPrecisionMin)}」。`,
+    ],
+    nextBrief: '转会窗即将开启：体育总监顾航需要同时控制预算、工资空间与报价竞争。',
+  };
+}
+
+export function buildCompletionResult(state: ScoutingState): { evidence: Evidence; summary: string[]; clubUpdate: ClubUpdate } {
+  return {
+    evidence: { ...state.evidence },
+    summary: buildArchiveSummary(state),
+    clubUpdate: buildClubUpdate(state),
+  };
 }
 
 /* ==========================================================================
@@ -723,7 +1092,7 @@ function createBaseState(options: ScoutingInitOptions, seed: number, phase: Leve
   const normalizedSeed = normalizeSeed(seed);
   const shuffled = shuffleCandidates(normalizedSeed);
   return {
-    version: 1,
+    version: 2,
     phase,
     mode: options.mode,
     fastPlay,
@@ -735,9 +1104,10 @@ function createBaseState(options: ScoutingInitOptions, seed: number, phase: Leve
     rounds: fastPlay ? ROUNDS_FAST : ROUNDS_NORMAL,
     dispatches: [],
     history: [],
+    loadout: { dispatch: null, report: null },
+    attempts: 0,
     fault: { inspected: [], picked: null, done: false },
     diagnose: { resolved: false },
-    installed: { limitedScouts: false, knowledgeReports: false },
     selectedCandidateId: null,
     transfer: { resolved: false, skipped: false },
     evidence: createEvidence(),
@@ -748,29 +1118,30 @@ function createBaseState(options: ScoutingInitOptions, seed: number, phase: Leve
 
 /**
  * 展示模式按 startPhase 预填前置步骤：
- * repair = 已诊断；verify = 两个模块已安装，可以直接开始派遣。
+ * repair = 诊断完成、模块未装；verify = 两个正确模块已装，可以直接开始派遣。
  * 预填不会把玩家没做过的步骤写成证据。
  */
 export function createInitialScoutingState(options: ScoutingInitOptions, seed: number): ScoutingState {
   const phase = requestedPhase(options);
   const state = createBaseState(options, seed, phase);
+  const faultPrefill = {
+    inspected: SCOUT_CANDIDATES.map((candidate) => candidate.id),
+    picked: SCOUT_CANDIDATES[0].id,
+    done: true,
+  };
   if (phase === 'commission' || phase === 'faultPlay') return state;
   if (phase === 'diagnose') {
-    return { ...state, fault: { inspected: SCOUT_CANDIDATES.map((candidate) => candidate.id), picked: SCOUT_CANDIDATES[0].id, done: true } };
+    return { ...state, fault: faultPrefill };
   }
   if (phase === 'repair') {
-    return {
-      ...state,
-      fault: { inspected: SCOUT_CANDIDATES.map((candidate) => candidate.id), picked: SCOUT_CANDIDATES[0].id, done: true },
-      diagnose: { resolved: true },
-    };
+    return { ...state, fault: faultPrefill, diagnose: { resolved: true } };
   }
   return {
     ...state,
     phase: 'verify',
-    fault: { inspected: SCOUT_CANDIDATES.map((candidate) => candidate.id), picked: SCOUT_CANDIDATES[0].id, done: true },
+    fault: faultPrefill,
     diagnose: { resolved: true },
-    installed: { limitedScouts: true, knowledgeReports: true },
+    loadout: { dispatch: 'limited-scouts', report: 'knowledge-reports' },
   };
 }
 
@@ -820,6 +1191,7 @@ function isRoundRecord(value: unknown): value is ScoutingRoundRecord {
   if (!isObject(value)) return false;
   if (!isFiniteNumber(value.round) || value.round < 1) return false;
   if (!Array.isArray(value.regions) || !value.regions.every(isRegionId)) return false;
+  if (!isFiniteNumber(value.knowledgeGain) || value.knowledgeGain < 0) return false;
   return isKnowledgeRecord(value.knowledgeBefore) && isKnowledgeRecord(value.knowledgeAfter);
 }
 
@@ -835,10 +1207,23 @@ function isValidCandidateOrder(value: unknown): value is string[] {
   return SCOUT_CANDIDATES.every((candidate) => set.has(candidate.id));
 }
 
-/** 校验并恢复存档；任何结构不合法都返回 null，由调用方从头开始。 */
+function isLoadout(value: unknown): value is ScoutingLoadout {
+  if (!isObject(value)) return false;
+  const dispatch = value.dispatch;
+  const report = value.report;
+  const dispatchOk = dispatch === null || dispatch === 'limited-scouts' || dispatch === 'wide-net';
+  const reportOk = report === null || report === 'knowledge-reports' || report === 'highlights';
+  return dispatchOk && reportOk;
+}
+
+function isSelectedId(value: unknown): value is string | null {
+  return value === null || (typeof value === 'string' && findCandidate(value) !== null);
+}
+
+/** 校验并恢复存档（只接受 v2 结构；旧版存档安全回退）。 */
 export function reviveScoutingState(raw: unknown, options: ScoutingInitOptions): ScoutingState | null {
   if (!isObject(raw)) return null;
-  if (raw.version !== 1) return null;
+  if (raw.version !== 2) return null;
   if (!isPhase(raw.phase)) return null;
   const mode = raw.mode;
   if (mode !== 'normal' && mode !== 'showcase') return null;
@@ -849,40 +1234,40 @@ export function reviveScoutingState(raw: unknown, options: ScoutingInitOptions):
   if (!isFiniteNumber(raw.seed) || !isRngState(raw.rng)) return null;
   if (!isValidCandidateOrder(raw.candidateOrder)) return null;
   if (!isKnowledgeRecord(raw.knowledge)) return null;
-  if (!isFiniteNumber(raw.round) || raw.round < 0 || raw.round > 4) return null;
-  if (!isFiniteNumber(raw.rounds) || (raw.rounds !== ROUNDS_NORMAL && raw.rounds !== ROUNDS_FAST)) return null;
+  if (!isFiniteNumber(raw.round) || raw.round < 0 || raw.round > ROUNDS_NORMAL) return null;
+  if (!isFiniteNumber(raw.rounds) || raw.rounds !== (raw.fastPlay ? ROUNDS_FAST : ROUNDS_NORMAL)) return null;
   if (raw.round > raw.rounds) return null;
   if (!Array.isArray(raw.dispatches) || !raw.dispatches.every(isRegionId)) return null;
   if (new Set(raw.dispatches).size !== raw.dispatches.length) return null;
-  if (raw.dispatches.length > SCOUTS_PER_ROUND) return null;
+  if (!isLoadout(raw.loadout)) return null;
+  if (!isFiniteNumber(raw.attempts) || raw.attempts < 0) return null;
+  const loadout = raw.loadout as ScoutingLoadout;
+  const expectedScouts = loadout.dispatch === 'limited-scouts' ? SCOUTS_PER_ROUND : loadout.dispatch === 'wide-net' ? WIDE_NET_SCOUTS : FALLBACK_SCOUTS;
+  if (raw.dispatches.length > expectedScouts) return null;
   if (!Array.isArray(raw.history) || !raw.history.every(isRoundRecord)) return null;
   if (raw.history.length !== raw.round) return null;
   const fault = raw.fault;
   if (!isObject(fault)) return null;
   if (!Array.isArray(fault.inspected) || !fault.inspected.every((id) => typeof id === 'string' && findCandidate(id) !== null)) return null;
-  if (!(fault.picked === null || (typeof fault.picked === 'string' && findCandidate(fault.picked) !== null))) return null;
+  if (!isSelectedId(fault.picked)) return null;
   if (!isBoolean(fault.done)) return null;
   const diagnose = raw.diagnose;
   if (!isObject(diagnose) || !isBoolean(diagnose.resolved)) return null;
-  const installed = raw.installed;
-  if (!isObject(installed) || !isBoolean(installed.limitedScouts) || !isBoolean(installed.knowledgeReports)) return null;
-  if (!(raw.selectedCandidateId === null || (typeof raw.selectedCandidateId === 'string' && findCandidate(raw.selectedCandidateId) !== null))) {
-    return null;
-  }
+  if (!isSelectedId(raw.selectedCandidateId)) return null;
   const transfer = raw.transfer;
   if (!isObject(transfer) || !isBoolean(transfer.resolved) || !isBoolean(transfer.skipped)) return null;
   if (!isEvidenceShape(raw.evidence)) return null;
   if (!isValidEventLog(raw.eventLog)) return null;
   if (!isBoolean(raw.completed)) return null;
-  // 交叉校验：没装模块不能有派遣与选择；没结束全部轮次不能选候选。
-  if ((raw.dispatches.length > 0 || raw.selectedCandidateId !== null) && (!installed.limitedScouts || !installed.knowledgeReports)) {
-    return null;
-  }
+
+  // 交叉校验：阶段不能早于已完成的前置步骤，避免读档绕过验证。
   if (raw.selectedCandidateId !== null && raw.round < raw.rounds) return null;
   if ((raw.phase === 'transfer' || raw.phase === 'summary') && raw.selectedCandidateId === null) return null;
+  if (raw.phase === 'summary' && raw.mode === 'normal' && !transfer.resolved) return null;
+  if (raw.phase === 'repair' && (raw.round !== 0 || raw.selectedCandidateId !== null || raw.dispatches.length > 0)) return null;
 
   return {
-    version: 1,
+    version: 2,
     phase: raw.phase,
     mode,
     fastPlay: raw.fastPlay,
@@ -898,14 +1283,16 @@ export function reviveScoutingState(raw: unknown, options: ScoutingInitOptions):
       regions: [...record.regions],
       knowledgeBefore: { ...record.knowledgeBefore },
       knowledgeAfter: { ...record.knowledgeAfter },
+      knowledgeGain: record.knowledgeGain,
     })),
+    loadout: { dispatch: loadout.dispatch, report: loadout.report },
+    attempts: Math.floor(raw.attempts),
     fault: {
       inspected: [...(fault.inspected as string[])],
       picked: fault.picked as string | null,
       done: fault.done,
     },
     diagnose: { resolved: diagnose.resolved },
-    installed: { limitedScouts: installed.limitedScouts, knowledgeReports: installed.knowledgeReports },
     selectedCandidateId: raw.selectedCandidateId as string | null,
     transfer: { resolved: transfer.resolved, skipped: transfer.skipped },
     evidence: {
@@ -919,8 +1306,13 @@ export function reviveScoutingState(raw: unknown, options: ScoutingInitOptions):
 }
 
 /** 界面用：区域知识度的精度描述。 */
-export function knowledgeSummary(state: ScoutingState, region: RegionId): string {
+export function knowledgeSummary(state: Pick<ScoutingState, 'knowledge'>, region: RegionId): string {
   const knowledge = state.knowledge[region];
   const precision = reportPrecision(knowledge);
   return `${precisionLabel(precision)} · ${precisionDescription(precision)}`;
+}
+
+/** 界面用：当前派遣规则的一行摘要。 */
+export function dispatchRuleSummary(state: Pick<ScoutingState, 'loadout' | 'rounds'>): string {
+  return `每轮 ${moduleScoutsPerRound(state)} 名球探 · ${REGIONS.length} 个区域 · 每区域每轮最多 1 人 · 每次考察 +${moduleKnowledgeGain(state)} 知识度 · ${state.rounds} 轮`;
 }

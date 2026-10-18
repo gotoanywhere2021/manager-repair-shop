@@ -303,3 +303,306 @@ html[data-reduce-motion='true'] .tactics-instruction,
 html[data-reduce-motion='true'] .tactics-pitch {
   transition-duration: 0.01ms !important;
 }
+
+/* ==========================================================================
+   v2：模块池、目标清单、决策可视化
+   ========================================================================== */
+
+.tactics-slots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.tactics-slot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tactics-slot-title {
+  font-size: 13px;
+  font-weight: 750;
+  color: var(--ink-soft);
+}
+
+.tactics-slot-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tactics-module-effect {
+  display: inline-block;
+  font-size: 11.5px;
+  color: var(--purple-deep);
+  line-height: 1.55;
+}
+
+.tactics-quick-install {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-weak);
+}
+
+.tactics-quick-install .tactics-hint {
+  flex: 1 1 100%;
+}
+
+.tactics-module-status {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.tactics-module-status li {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.tactics-module-status li.is-installed {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.tactics-module-status li.is-installed > span:first-child {
+  color: var(--green);
+}
+
+.tactics-module-tag {
+  margin-left: auto;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--surface-weak);
+  color: var(--ink-faint);
+  font-size: 10.5px;
+}
+
+/* ---------- 指标卡：数值 + 相对故障版增减 + 一句解释 ---------- */
+
+.tactics-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0;
+  border: none;
+  background: none;
+}
+
+.tactics-metric-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-weak);
+  min-width: 0;
+}
+
+.tactics-metric-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.tactics-metric-label {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.tactics-metric-value {
+  font-size: 18px;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.tactics-metric-delta {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.tactics-metric-delta.is-up {
+  color: var(--green-deep);
+}
+
+.tactics-metric-delta.is-down {
+  color: var(--red);
+}
+
+.tactics-metric-explain {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
+
+/* ---------- 目标清单 ---------- */
+
+.tactics-target-title {
+  font-size: 13px;
+  font-weight: 750;
+  color: var(--ink-soft);
+}
+
+.tactics-targets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tactics-target {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 12.5px;
+}
+
+.tactics-target.is-met {
+  border-color: #c9e8d6;
+  background: var(--green-soft);
+}
+
+.tactics-target.is-missed {
+  border-color: #f0cfcb;
+  background: var(--red-soft);
+}
+
+.tactics-target-mark {
+  flex: none;
+  width: 16px;
+  font-weight: 800;
+  color: var(--ink-faint);
+}
+
+.tactics-target.is-met .tactics-target-mark {
+  color: var(--green-deep);
+}
+
+.tactics-target.is-missed .tactics-target-mark {
+  color: var(--red);
+}
+
+.tactics-target-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.tactics-target-label {
+  font-weight: 700;
+}
+
+.tactics-target-detail {
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+/* ---------- 职责画在阵型图上 ---------- */
+
+.tactics-player.is-fullback .tactics-player-dot {
+  background: #ffe9b8;
+}
+
+.tactics-player.is-pivot .tactics-player-dot {
+  background: #cfe3ff;
+}
+
+.tactics-player.duty-overlap {
+  transform: translateY(-8px);
+}
+
+.tactics-player.duty-invert {
+  transform: translateX(4px);
+}
+
+.tactics-player {
+  transition: transform 220ms var(--ease);
+}
+
+.tactics-duty-arrow {
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: #fff3cd;
+  white-space: nowrap;
+}
+
+.tactics-duty-arrow.is-invert {
+  color: #cfe3ff;
+}
+
+.tactics-pivot-mark {
+  font-size: 9px;
+  font-weight: 800;
+  color: #cfe3ff;
+  line-height: 1.2;
+}
+
+.tactics-duty-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+/* ---------- 俱乐部时间线预览 ---------- */
+
+.tactics-club-update {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tactics-club-headline {
+  font-size: 14px;
+  font-weight: 750;
+  color: var(--ink);
+}
+
+.tactics-club-next {
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+@media (max-width: 1080px) {
+  .tactics-slots {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .tactics-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tactics-player {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+html[data-reduce-motion='true'] .tactics-player {
+  transition-duration: 0.01ms !important;
+}
+

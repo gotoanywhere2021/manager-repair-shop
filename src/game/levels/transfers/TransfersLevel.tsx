@@ -23,15 +23,18 @@ import {
   DIAGNOSE_OPTIONS,
   RIVAL_HIJACK_AT,
   TRANSFER_FAULT_NOTE,
+  TRANSFER_MODULE_IDS,
+  TRANSFER_MODULE_POOL,
   TRANSFER_QUIZ_CORRECT_ID,
   TRANSFER_QUIZ_EXPLANATIONS,
   TRANSFER_QUIZ_OPTIONS,
   TRANSFER_RULE_LINES,
-  TRANSFER_BUDGET,
   TRANSFER_WAGE_SPACE,
   advanceToTransfer,
   answerTransfer,
-  canOffer,
+  archiveProblems,
+  buildTransfersClubUpdate,
+  budgetLimit,
   canWaitTarget,
   closeWindow,
   createTransfersState,
@@ -42,7 +45,9 @@ import {
   isGoalMet,
   missedTargets,
   offer,
-  reopenWindow,
+  previewOffer,
+  previewWait,
+  reconfigure,
   requiredSignings,
   resolveDiagnosis,
   reviveTransfersState,
@@ -56,23 +61,41 @@ import {
   tierName,
   transfersComparison,
   transferSummaryLines,
+  verificationValid,
   waitTarget,
 } from './logic';
-import type { TransferActionResult, TransfersState, TransferTier } from './logic';
+import type { TransferActionResult, TransferModuleId, TransfersState, TransferTier } from './logic';
+import { canAdvanceToTransfer } from './logic';
 import './transfers.css';
 
 const TIERS: TransferTier[] = ['low', 'normal', 'high'];
 
-function remainingWage(state: TransfersState): number {
-  return state.wage;
+function moduleInfo(level: LevelScreenProps['level'], id: TransferModuleId) {
+  const pooled = TRANSFER_MODULE_POOL.find((module) => module.id === id);
+  if (!pooled) return null;
+  if (id === 'budget' || id === 'negotiation') {
+    const definition = level.availableModules.find((item) => item.id === id);
+    if (definition) {
+      return {
+        ...pooled,
+        name: definition.name,
+        englishName: definition.englishName,
+        description: definition.description,
+        sideEffect: definition.sideEffect ?? pooled.sideEffect,
+      };
+    }
+  }
+  return pooled;
 }
 
 function SettlementDetails({ state }: { state: TransfersState }) {
   const signed = signedPlayers(state);
   const missed = missedTargets(state);
+  const problems = archiveProblems(state);
   const negotiationLog = state.eventLog.filter((entry) =>
     ['offer-low', 'offer-normal', 'offer-high', 'wait'].includes(entry.action),
   );
+  const spend = Math.max(0, budgetLimit(state) - state.budget);
   return (
     <div className="transfers-settlement">
       <div className="transfers-stat-row">
@@ -82,24 +105,51 @@ function SettlementDetails({ state }: { state: TransfersState }) {
           hint={isGoalMet(state) ? '已达到目标' : '还需要继续签人'}
           tone={isGoalMet(state) ? 'green' : 'red'}
         />
-        <StatTile label="剩余转会预算" value={formatFee(state.budget)} hint={`初始 ${formatFee(TRANSFER_BUDGET)}`} tone={state.budget > 0 ? 'green' : 'red'} />
         <StatTile
-          label="剩余周薪空间"
-          value={formatWage(remainingWage(state))}
-          hint={`初始 ${formatWage(TRANSFER_WAGE_SPACE)}`}
-          tone={state.wage > 0 ? 'green' : 'red'}
+          label="已花费预算"
+          value={formatFee(spend)}
+          hint={`上限 ${formatFee(budgetLimit(state))}`}
+          tone={spend <= budgetLimit(state) ? 'green' : 'red'}
+        />
+        <StatTile
+          label="新增周薪"
+          value={formatWage(Math.max(0, TRANSFER_WAGE_SPACE - state.wage))}
+          hint={`上限 ${formatWage(TRANSFER_WAGE_SPACE)}`}
+          tone={state.wage >= 0 ? 'green' : 'red'}
+        />
+        <StatTile label="验证次数" value={`第 ${state.verifyAttempt} 次`} hint={`已报价/等待 ${state.actionsTaken} 次`} />
+      </div>
+
+      <div className="transfers-meter-row">
+        <Meter
+          label={state.modules.budget ? '转会预算' : '转会预算（规则未启用，本次不扣预算）'}
+          value={state.modules.budget ? state.budget : 0}
+          max={budgetLimit(state)}
+          tone={state.modules.budget ? (state.budget > 0 ? 'green' : 'amber') : 'amber'}
+          valueLabel={`${formatFee(state.budget)} / ${formatFee(budgetLimit(state))}`}
+        />
+        <Meter
+          label={state.modules.budget ? '周薪空间' : '周薪空间（规则未启用，本次不占工资）'}
+          value={state.modules.budget ? state.wage : 0}
+          max={TRANSFER_WAGE_SPACE}
+          tone={state.modules.budget ? (state.wage > 0 ? 'green' : 'amber') : 'amber'}
+          valueLabel={`${formatWage(state.wage)} / ${formatWage(TRANSFER_WAGE_SPACE)}`}
         />
       </div>
 
-      <Callout
-        tone={isGoalMet(state) ? 'green' : 'red'}
-        icon={isGoalMet(state) ? '✓' : '✕'}
-        title={isGoalMet(state) ? '完成条件已满足' : '完成条件还没有满足'}
-      >
-        {isGoalMet(state)
-          ? `至少签下 ${requiredSignings(state)} 人的目标已达成；不要求花光预算，也不要求签满 3 人。`
-          : `目标是最少签下 ${requiredSignings(state)} 人。当前 ${signed.length} 人，可以重开窗口再试一次。`}
-      </Callout>
+      {problems.length === 0 ? (
+        <Callout tone="green" icon="✓" title="目标达成，验证有效">
+          至少签下 {requiredSignings(state)} 人，且预算与工资模块都已装上，可以进入迁移题。
+        </Callout>
+      ) : (
+        <Callout tone="red" icon="✕" title="还不能归档">
+          <ul className="transfers-problem-list">
+            {problems.map((problem) => (
+              <li key={problem}>{problem}</li>
+            ))}
+          </ul>
+        </Callout>
+      )}
 
       <section className="transfers-subsection">
         <h3 className="transfers-subtitle">真实签约记录</h3>
@@ -165,8 +215,12 @@ function NegotiationCard({
   if (!player) return null;
   const signed = player.status === 'signed';
   const lost = player.status === 'lost';
-  const checks = TIERS.map((tier) => ({ tier, check: canOffer(state, player.id, tier) }));
+  const tiers = TIERS.map((tier) => previewOffer(state, player.id, tier)).filter(
+    (preview): preview is NonNullable<typeof preview> => Boolean(preview),
+  );
   const wait = canWaitTarget(state, player.id);
+  const waitInfo = previewWait(state);
+  const priceChanged = player.askingPrice !== player.valuation;
 
   return (
     <li className={`transfers-player${signed ? ' is-signed' : ''}${lost ? ' is-lost' : ''}`}>
@@ -182,7 +236,15 @@ function NegotiationCard({
       <dl className="transfers-player-facts">
         <div>
           <dt>当前要价</dt>
-          <dd>{formatFee(player.askingPrice)}</dd>
+          <dd>
+            {formatFee(player.askingPrice)}
+            {priceChanged && (
+              <span className="transfers-price-change">
+                原 {formatFee(player.valuation)}
+                {player.askingPrice < player.valuation ? ' ↓' : ' ↑'}
+              </span>
+            )}
+          </dd>
         </div>
         <div>
           <dt>周薪</dt>
@@ -201,33 +263,56 @@ function NegotiationCard({
         valueLabel={`${player.rivalInterest} / ${RIVAL_HIJACK_AT}`}
       />
       {!signed && !lost && (
-        <div className="transfers-offer-row">
-          {checks.map(({ tier, check }) => (
+        <>
+          <div className="transfers-tier-list">
+            {tiers.map((preview) => (
+              <div
+                key={preview.tier}
+                className={`transfers-tier${preview.expectedSuccess ? ' is-ok' : ' is-risk'}${
+                  preview.allowed ? '' : ' is-blocked'
+                }`}
+              >
+                <Button
+                  size="sm"
+                  variant={preview.tier === 'high' ? 'secondary' : preview.tier === 'low' ? 'ghost' : 'primary'}
+                  disabled={!preview.allowed}
+                  onClick={() => onAction(offer(state, player.id, preview.tier))}
+                  aria-label={`${tierName(preview.tier)}：${player.name}，本次花费 ${formatFee(preview.totalCost)}`}
+                >
+                  {tierName(preview.tier)} {formatFee(preview.totalCost)}
+                </Button>
+                <div className="transfers-tier-copy">
+                  <p className="transfers-tier-expected">
+                    <span aria-hidden="true">{preview.expectedSuccess ? '◆' : '⚠'}</span> {preview.expectedText}
+                  </p>
+                  <p className="transfers-tier-condition">{preview.condition}</p>
+                  {preview.allowed && preview.budgetAfter !== null && (
+                    <p className="transfers-tier-condition">
+                      签约后：预算 {formatFee(Math.max(0, preview.budgetAfter))} / 周薪{' '}
+                      {formatWage(Math.max(0, preview.wageAfter ?? 0))}
+                    </p>
+                  )}
+                  {!preview.allowed && <p className="transfers-tier-blocked">不可提交：{preview.blockedReason}</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="transfers-wait-row">
             <Button
-              key={tier}
               size="sm"
-              variant={tier === 'high' ? 'secondary' : tier === 'low' ? 'ghost' : 'primary'}
-              disabled={!check.ok}
-              onClick={() => onAction(offer(state, player.id, tier))}
-              aria-label={`${tierName(tier)}：${player.name}，本次花费 ${formatFee(check.totalCost)}`}
+              variant="secondary"
+              disabled={!wait.ok}
+              onClick={() => onAction(waitTarget(state, player.id))}
+              aria-label={`等待一轮：${player.name}`}
             >
-              {tierName(tier)} {formatFee(check.totalCost)}
+              等待一轮
             </Button>
-          ))}
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={!wait.ok}
-            onClick={() => onAction(waitTarget(state, player.id))}
-            aria-label={`等待一轮：${player.name}`}
-          >
-            等待一轮
-          </Button>
-        </div>
+            <p className="transfers-tier-condition">{waitInfo.text}</p>
+          </div>
+        </>
       )}
-      {!signed && !lost && checks.every(({ check }) => !check.ok) && (
-        <p className="transfers-disabled-hint">{checks[0]?.check.reason}</p>
-      )}
+      {signed && <p className="transfers-muted">这笔签约已经占用预算与周薪，不能再报价。</p>}
+      {lost && <p className="transfers-muted">竞争对手已经赢下这名目标，永久失去。</p>}
     </li>
   );
 }
@@ -264,10 +349,19 @@ export function TransfersLevel({
   const completeRef = useRef(onComplete);
   completeRef.current = onComplete;
   const completedRef = useRef(false);
+  function finishLevel() {
+    if (completedRef.current) return;
+    completedRef.current = true;
+    completeRef.current({
+      evidence: state.evidence,
+      summary: transferSummaryLines(state),
+      clubUpdate: buildTransfersClubUpdate(state),
+    });
+  }
   useEffect(() => {
     if (state.phase !== 'summary' || completedRef.current) return;
-    completedRef.current = true;
-    completeRef.current({ evidence: state.evidence, summary: transferSummaryLines(state) });
+    finishLevel();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
 
   function apply(result: TransferActionResult) {
@@ -279,10 +373,8 @@ export function TransfersLevel({
     setState(result.state);
   }
 
-  const budgetModule = level.availableModules.find((item) => item.id === 'budget');
-  const negotiationModule = level.availableModules.find((item) => item.id === 'negotiation');
-  const bothModules = state.modules.budget && state.modules.negotiation;
-
+  const moduleCount = TRANSFER_MODULE_IDS.filter((id) => state.modules[id]).length;
+  const clubUpdate = buildTransfersClubUpdate(state);
   const sideContent = (
     <>
       {mode === 'showcase' && (
@@ -296,19 +388,22 @@ export function TransfersLevel({
       <Panel title="本关规则" subtitle="所有数值都从这里来">
         <RuleList items={TRANSFER_RULE_LINES.map((line) => ({ label: line.label, value: line.value }))} />
       </Panel>
-      <Panel title="模块状态">
+      <Panel title="模块状态" actions={<Chip tone={verificationValid(state) ? 'green' : 'amber'}>{moduleCount} / 4</Chip>}>
         <ul className="transfers-module-state">
-          <li>
-            <Chip tone={state.modules.budget ? 'green' : 'neutral'}>{state.modules.budget ? '已安装' : '未安装'}</Chip>
-            <span>预算与工资空间</span>
-          </li>
-          <li>
-            <Chip tone={state.modules.negotiation ? 'green' : 'neutral'}>
-              {state.modules.negotiation ? '已安装' : '未安装'}
-            </Chip>
-            <span>报价与谈判</span>
-          </li>
+          {TRANSFER_MODULE_POOL.map((module) => (
+            <li key={module.id}>
+              <Chip tone={state.modules[module.id] ? (module.kind === 'correct' ? 'green' : 'amber') : 'neutral'}>
+                {state.modules[module.id] ? '已安装' : '未安装'}
+              </Chip>
+              <span>{module.name}</span>
+            </li>
+          ))}
         </ul>
+        <p className="transfers-muted">
+          {verificationValid(state)
+            ? '两个正确模块都已安装，本次验证有机会归档。'
+            : '正确模块未装齐：验证仍可进行，但归档会被阻止。'}
+        </p>
       </Panel>
       <Panel title="操作记录" actions={<Chip>{state.eventLog.length} 条</Chip>}>
         <EventLogList entries={state.eventLog} maxHeight={260} />
@@ -328,12 +423,12 @@ export function TransfersLevel({
         <Panel title="委托：让报价重新有代价" subtitle="客户 顾航 · 体育总监">
           <p>
             顾航的俱乐部在旧版转会窗里可以随便签人：看到身价就点，预算和工资空间永远不会报警，
-            窗口关上才发现一个人都没签成。你要把「转会谈判」装回去。
+            窗口关上才发现一个人都没签成。你要从模块池里挑出正确的规则，把「转会谈判」装回去。
           </p>
           <ul className="transfers-objective-list">
             <li>确认转会预算与周薪空间是两本账，签约同时占用两者。</li>
             <li>在 3 轮窗口里用报价、等待与竞争兴趣做取舍。</li>
-            <li>至少签下 2 人，用真实出价记录解释签下或错过。</li>
+            <li>至少签下 2 人，用真实出价记录解释签下或错过；装错模块会真的变差。</li>
           </ul>
           <ArrowFlow from="报价没有成本" to="每一次报价都在权衡「现在锁定」还是「再等一轮」" />
           <div className="transfers-actions">
@@ -400,34 +495,46 @@ export function TransfersLevel({
       )}
 
       {state.phase === 'repair' && (
-        <Panel title="维修 · 安装两个规则模块" subtitle="装上之后，报价才开始有代价">
-          <div className="transfers-module-grid">
-            <ModuleCard
-              name={budgetModule?.name ?? '预算与工资空间'}
-              englishName={budgetModule?.englishName ?? 'Budget & Wages'}
-              summary={budgetModule?.description ?? '转会预算与周薪空间分别记账。'}
-              sideEffect={budgetModule?.sideEffect}
-              installed={state.modules.budget}
-              onToggle={() => apply(setModule(state, 'budget', !state.modules.budget))}
-            />
-            <ModuleCard
-              name={negotiationModule?.name ?? '报价与谈判'}
-              englishName={negotiationModule?.englishName ?? 'Negotiation'}
-              summary={negotiationModule?.description ?? '报价分档，等待可能压低价格，也可能引来竞争对手。'}
-              sideEffect={negotiationModule?.sideEffect}
-              installed={state.modules.negotiation}
-              onToggle={() => apply(setModule(state, 'negotiation', !state.modules.negotiation))}
-            />
-          </div>
-          <Callout tone="purple" title="装上之后会发生什么">
-            转会费与经纪人佣金一起扣预算，周薪单独扣工资空间；3 轮窗口里你可以对 1 名目标报低价 / 正常 / 高价，
-            也可以等待一轮压低要价，但等待和低价都会推高竞争对手兴趣。
+        <Panel
+          title="维修 · 从模块池里挑规则"
+          subtitle={`第 ${state.verifyAttempt} 次验证前的配置：可以自由安装 / 卸载，装错模块也会真实生效`}
+        >
+          <Callout tone="purple" title="模块池里有两张错误卡">
+            下面 4 张卡里只有「预算与工资空间」「报价与谈判」是正确的修复。另外两张看起来很有诱惑力，
+            但会让结果真的变差：预算被砍、竞争兴趣暴涨、或者验证直接无效。
           </Callout>
+          <div className="transfers-module-grid">
+            {TRANSFER_MODULE_IDS.map((id) => {
+              const info = moduleInfo(level, id);
+              if (!info) return null;
+              const installed = state.modules[id];
+              return (
+                <ModuleCard
+                  key={id}
+                  name={info.name}
+                  englishName={info.englishName}
+                  summary={info.description}
+                  sideEffect={info.sideEffect}
+                  installed={installed}
+                  onToggle={() => apply(setModule(state, id, !installed))}
+                  badge={
+                    <span className={`transfers-module-badge${info.kind === 'risky' ? ' is-wrong' : ' is-right'}`}>
+                      {info.kind === 'risky' ? '错误模块：装上会真实变差' : installed ? '规则生效中（归档需要它）' : '正确模块（归档需要它）'}
+                    </span>
+                  }
+                />
+              );
+            })}
+          </div>
+          {!verificationValid(state) && (
+            <Callout tone="amber" title="正确模块还没有装齐" icon="⚠">
+              也可以直接开始验证，但本次结果会被判定为「验证无效」，归档按钮会被逻辑阻止；
+              到时候可以回到维修台重新配置。
+            </Callout>
+          )}
           <div className="transfers-actions">
-            <Button onClick={() => apply(startWindow(state))} disabled={!bothModules}>
-              开始 3 轮转会窗口
-            </Button>
-            {!bothModules && <span className="transfers-disabled-hint">两个模块都安装后，窗口才会开始。</span>}
+            <Button onClick={() => apply(startWindow(state))}>开始第 {state.verifyAttempt} 次验证（{moduleCount} 个模块）</Button>
+            <span className="transfers-muted">窗口开始后模块锁定；失败可以回到维修台重新配置。</span>
           </div>
         </Panel>
       )}
@@ -436,7 +543,7 @@ export function TransfersLevel({
         <>
           <Panel
             title={state.windowClosed ? '转会窗口已关闭 · 结算' : `转会窗口 · 第 ${state.round} / ${roundLimit(state)} 轮`}
-            subtitle={`每轮只能对 1 名目标报价或等待 1 轮；目标：签下至少 ${requiredSignings(state)} 人`}
+            subtitle={`第 ${state.verifyAttempt} 次验证 · 每轮只能对 1 名目标报价或等待 1 轮；目标：签下至少 ${requiredSignings(state)} 人`}
             actions={
               <Chip tone={state.windowClosed ? 'neutral' : 'green'} icon={state.windowClosed ? '⏹' : '⏳'}>
                 {state.windowClosed ? '窗口已关闭' : `剩余 ${Math.max(0, roundLimit(state) - state.round + 1)} 轮`}
@@ -445,18 +552,37 @@ export function TransfersLevel({
           >
             {!state.windowClosed ? (
               <>
+                <div className="transfers-meter-row">
+                  <Meter
+                    label={state.modules.budget ? '转会预算' : '转会预算（规则未启用，本次不扣预算）'}
+                    value={state.modules.budget ? state.budget : 0}
+                    max={budgetLimit(state)}
+                    tone={state.modules.budget ? (state.budget > 0 ? 'green' : 'amber') : 'amber'}
+                    valueLabel={`${formatFee(state.budget)} / ${formatFee(budgetLimit(state))}`}
+                  />
+                  <Meter
+                    label={state.modules.budget ? '周薪空间' : '周薪空间（规则未启用，本次不占工资）'}
+                    value={state.modules.budget ? state.wage : 0}
+                    max={TRANSFER_WAGE_SPACE}
+                    tone={state.modules.budget ? (state.wage > 0 ? 'green' : 'amber') : 'amber'}
+                    valueLabel={`${formatWage(state.wage)} / ${formatWage(TRANSFER_WAGE_SPACE)}`}
+                  />
+                </div>
                 <div className="transfers-stat-row">
-                  <StatTile label="剩余转会预算" value={formatFee(state.budget)} hint="含经纪人佣金" />
-                  <StatTile label="剩余周薪空间" value={formatWage(state.wage)} hint="签约会同时占用" />
                   <StatTile
                     label="已签下"
                     value={`${signedCount(state)} / ${requiredSignings(state)}`}
                     tone={isGoalMet(state) ? 'green' : 'purple'}
                   />
+                  <StatTile label="已花费预算" value={formatFee(Math.max(0, budgetLimit(state) - state.budget))} hint={`上限 ${formatFee(budgetLimit(state))}`} />
+                  <StatTile label="经纪人模块" value={state.modules.galaxy ? '已装（预算-70%）' : '未装'} tone={state.modules.galaxy ? 'red' : 'neutral'} />
+                  <StatTile label="等待模块" value={state.modules.infiniteWait ? '已装（等待 +45 兴趣）' : '未装'} tone={state.modules.infiniteWait ? 'red' : 'neutral'} />
                 </div>
-                <p className="transfers-muted">
-                  低价报价便宜但会推高兴趣；正常报价按要价成交；高价保证成交但多付 10%；等待会压低要价，也会让对手更接近截胡。
-                </p>
+                {!verificationValid(state) && (
+                  <Callout tone="amber" title="本次验证无效" icon="⚠">
+                    正确模块没有装齐。你仍然可以继续体验报价与竞争，但结束时不能归档，只能回到维修台重新配置。
+                  </Callout>
+                )}
                 <ul className="transfers-player-grid">
                   {state.players.map((player) => (
                     <NegotiationCard key={player.id} state={state} playerId={player.id} onAction={apply} />
@@ -475,11 +601,11 @@ export function TransfersLevel({
               <>
                 <SettlementDetails state={state} />
                 <div className="transfers-actions">
-                  {isGoalMet(state) ? (
+                  {canAdvanceToTransfer(state) ? (
                     <Button onClick={() => apply(advanceToTransfer(state))}>进入迁移题</Button>
                   ) : (
-                    <Button variant="secondary" onClick={() => apply(reopenWindow(state))}>
-                      重开转会窗口（保留已安装模块）
+                    <Button variant="secondary" onClick={() => apply(reconfigure(state))}>
+                      回到维修台重新配置
                     </Button>
                   )}
                 </div>
@@ -492,7 +618,8 @@ export function TransfersLevel({
       {state.phase === 'transfer' && (
         <Panel title="迁移 · 换一家俱乐部做同样的选择" subtitle="不计分，只看判断">
           <Callout tone="neutral" title="本次真实结果">
-            签下 {signedCount(state)} 人，剩余预算 {formatFee(state.budget)}，剩余工资空间 {formatWage(state.wage)}。
+            第 {state.verifyAttempt} 次验证签下 {signedCount(state)} 人，已花费 {formatFee(Math.max(0, budgetLimit(state) - state.budget))}，
+            剩余工资空间 {formatWage(state.wage)}。
           </Callout>
           <QuizCard
             question="另一家俱乐部也有 3 名目标：一名便宜但被三家争抢，一名很贵但没人抢，一名要价一般。经理说「先等两轮，等更便宜再报」。哪一句最准确地描述他会同时面对什么？"
@@ -529,13 +656,19 @@ export function TransfersLevel({
               ))}
             </ul>
           </section>
+          <section className="transfers-subsection">
+            <h3 className="transfers-subtitle">俱乐部时间线将记录</h3>
+            <p className="transfers-club-headline">{clubUpdate.headline}</p>
+            <ul className="transfers-club-details">
+              {clubUpdate.details.map((detail) => (
+                <li key={detail.slice(0, 16)}>{detail}</li>
+              ))}
+            </ul>
+          </section>
           <div className="transfers-actions">
             <Button
               onClick={() => {
-                if (!completedRef.current) {
-                  completedRef.current = true;
-                  completeRef.current({ evidence: state.evidence, summary: transferSummaryLines(state) });
-                }
+                finishLevel();
                 onExit();
               }}
             >
@@ -554,7 +687,7 @@ export function TransfersLevel({
         description={
           <p>
             关闭后不能再报价或等待，会立刻结算本次窗口。当前已签下 {signedCount(state)} 人，
-            目标是至少 {requiredSignings(state)} 人。关闭后如果不够，可以重开窗口。
+            目标是至少 {requiredSignings(state)} 人。关闭后如果不够或验证无效，可以回到维修台重新配置。
           </p>
         }
         confirmLabel="关闭窗口并结算"

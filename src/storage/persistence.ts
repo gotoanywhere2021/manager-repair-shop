@@ -16,6 +16,25 @@ export interface Progress {
   /** 每关可恢复的组件状态，由关卡自行定义结构。 */
   levelStates: Partial<Record<LevelId, unknown>>;
   completedAt: Partial<Record<LevelId, string>>;
+  /** 俱乐部档案：赛季名称与真实维修结果时间线。 */
+  club: ClubProgress;
+}
+
+export interface ClubTimelineEntry {
+  levelId: LevelId;
+  headline: string;
+  details: string[];
+  at: string;
+}
+
+export interface ClubProgress {
+  name: string;
+  season: string;
+  timeline: ClubTimelineEntry[];
+}
+
+export function getDefaultClub(): ClubProgress {
+  return { name: '北港联', season: '2026/27', timeline: [] };
 }
 
 export interface Settings {
@@ -43,6 +62,7 @@ export function getDefaultProgress(): Progress {
     lastSavedAt: new Date(0).toISOString(),
     levelStates: {},
     completedAt: {},
+    club: getDefaultClub(),
   };
 }
 
@@ -119,6 +139,33 @@ function sanitizeCompletedAt(value: unknown): Partial<Record<LevelId, string>> {
   return result;
 }
 
+function sanitizeClub(value: unknown): ClubProgress {
+  const fallback = getDefaultClub();
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return fallback;
+  const candidate = value as Record<string, unknown>;
+  const rawTimeline = Array.isArray(candidate.timeline) ? candidate.timeline : [];
+  const timeline: ClubTimelineEntry[] = [];
+  for (const item of rawTimeline) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const entry = item as Record<string, unknown>;
+    if (!isLevelId(entry.levelId) || typeof entry.headline !== 'string' || !entry.headline.trim()) continue;
+    const details = Array.isArray(entry.details)
+      ? entry.details.filter((line): line is string => typeof line === 'string' && line.trim().length > 0).slice(0, 4)
+      : [];
+    timeline.push({
+      levelId: entry.levelId,
+      headline: entry.headline.slice(0, 120),
+      details,
+      at: typeof entry.at === 'string' ? entry.at : new Date(0).toISOString(),
+    });
+  }
+  return {
+    name: typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name.slice(0, 24) : fallback.name,
+    season: typeof candidate.season === 'string' && candidate.season.trim() ? candidate.season.slice(0, 16) : fallback.season,
+    timeline: timeline.slice(-8),
+  };
+}
+
 /** 把外部数据规整为合法 Progress；无法识别的结构返回 null。 */
 export function sanitizeProgress(raw: unknown): Progress | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -138,6 +185,7 @@ export function sanitizeProgress(raw: unknown): Progress | null {
     lastSavedAt: typeof candidate.lastSavedAt === 'string' ? candidate.lastSavedAt : new Date(0).toISOString(),
     levelStates: sanitizeLevelStates(candidate.levelStates),
     completedAt: sanitizeCompletedAt(candidate.completedAt),
+    club: sanitizeClub(candidate.club),
   };
 }
 

@@ -1,5 +1,6 @@
 /* ==========================================================================
-   关卡三《转会窗》专属样式：类名统一 .transfers- 前缀。   ========================================================================== */
+   关卡三《转会窗》专属样式：类名统一 .transfers- 前缀。
+   ========================================================================== */
 
 .transfers-muted {
   font-size: 13px;
@@ -38,7 +39,7 @@
 }
 
 .transfers-objective-list li::before {
-  content: '→';
+  content: '◆';
   position: absolute;
   left: 0;
   color: var(--theme, var(--purple));
@@ -81,24 +82,50 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 维修：模块卡 */
+/* 维修：模块池 */
 .transfers-module-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   gap: 12px;
 }
 
-/* 统计。*/
+.transfers-module-badge {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.55;
+}
+
+.transfers-module-badge.is-right {
+  color: var(--green-deep);
+}
+
+.transfers-module-badge.is-wrong {
+  color: var(--red);
+}
+
+/* 统计与仪表 */
 .transfers-stat-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
 }
 
-/* 谈判阶段。 名目。*/
+.transfers-meter-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+/* 谈判阶段：3 名目标 */
 .transfers-player-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 12px;
 }
 
@@ -175,14 +202,86 @@
   font-variant-numeric: tabular-nums;
 }
 
-.transfers-offer-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
+.transfers-price-change {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
 }
 
-.transfers-offer-row .btn {
-  flex: 1 1 auto;
+.transfers-tier-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.transfers-tier {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-weak);
+  transition: border-color var(--speed) var(--ease), background var(--speed) var(--ease);
+}
+
+.transfers-tier.is-ok {
+  border-color: color-mix(in srgb, var(--green) 40%, var(--line));
+  background: var(--green-soft);
+}
+
+.transfers-tier.is-risk {
+  border-color: color-mix(in srgb, var(--amber) 40%, var(--line));
+  background: var(--amber-soft);
+}
+
+.transfers-tier.is-blocked {
+  opacity: 0.72;
+}
+
+.transfers-tier .btn {
+  align-self: flex-start;
+}
+
+.transfers-tier-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.transfers-tier-expected {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--ink);
+  line-height: 1.55;
+}
+
+.transfers-tier-condition {
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+.transfers-tier-blocked {
+  font-size: 11.5px;
+  color: var(--red);
+  line-height: 1.55;
+}
+
+.transfers-wait-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.transfers-wait-row .btn {
+  align-self: flex-start;
 }
 
 /* 结算 */
@@ -202,6 +301,16 @@
   font-size: 14px;
   font-weight: 750;
   letter-spacing: 0.01em;
+}
+
+.transfers-problem-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 0;
+  padding-left: 18px;
+  list-style: disc;
+  font-size: 13px;
 }
 
 .transfers-missed-list {
@@ -261,6 +370,33 @@
   gap: 8px;
 }
 
+.transfers-club-headline {
+  font-size: 15px;
+  font-weight: 750;
+}
+
+.transfers-club-details {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  line-height: 1.7;
+}
+
+.transfers-club-details li {
+  position: relative;
+  padding-left: 16px;
+}
+
+.transfers-club-details li::before {
+  content: '·';
+  position: absolute;
+  left: 4px;
+  color: var(--theme, var(--purple));
+  font-weight: 800;
+}
+
 @keyframes transfers-pop {
   from {
     opacity: 0.6;
@@ -277,11 +413,15 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .transfers-offer-row .btn {
-    flex: 1 1 45%;
+  .transfers-meter-row {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .transfers-actions .btn {
     flex: 1 1 100%;
+  }
+
+  .transfers-tier .btn {
+    width: 100%;
   }
 }

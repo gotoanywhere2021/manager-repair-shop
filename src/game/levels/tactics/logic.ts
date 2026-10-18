@@ -1,13 +1,26 @@
 /**
- * 关卡一《战术板》的纯规则代码。
+ * 关卡一《战术板》的纯规则代码（v2 可玩性升级版）。
  *
- * 这里只有状态机、数值与事件日志，不依赖 React / DOM；随机只用 engine/rng.ts。
- * 设计目标：让玩家在故障版发现「只有一套站位」的结构问题，再用双形态与职责把它修好。
+ * v2 变化：
+ * - 模块池：两个槽位各有两个选择（正确模块 + 有诱惑力但错误/有副作用的模块）。
+ * - 验证前可自由安装/卸载模块，允许不装齐正确模块就开始验证，结果会真实变差。
+ * - 验证有明确目标；未达成时给出具体原因，可清空成绩回到维修台重新配置。
+ * - 完成时产出真实俱乐部时间线数据（clubUpdate）。
+ *
+ * 本文件不依赖 React / DOM；随机只用 engine/rng.ts。
  */
 import { recordEvent } from '../../engine/events';
 import type { RngState } from '../../engine/rng';
 import { createRng, isRngState, nextInt, nextUnit, normalizeSeed, reviveRng } from '../../engine/rng';
-import type { EventLogEntry, EventState, Evidence, GameMode, LevelPhase, ShowcaseOptions } from '../../engine/types';
+import type {
+  ClubUpdate,
+  EventLogEntry,
+  EventState,
+  Evidence,
+  GameMode,
+  LevelPhase,
+  ShowcaseOptions,
+} from '../../engine/types';
 import { PHASE_ORDER, createEvidence } from '../../engine/types';
 
 /* ==========================================================================
@@ -21,16 +34,16 @@ export type PivotDutyId = 'single' | 'double';
 export type FaultInstructionId = 'press' | 'balance' | 'drop';
 export type VerifyInstructionId = 'press-strong' | 'cover-wing' | 'shrink-center';
 export type AttackSide = 'right' | 'center' | 'left';
-export type RepairStep = 'shape' | 'duty' | 'done';
+
+export type ShapeSlotModuleId = 'dual-shape' | 'man-marking';
+export type AttackSlotModuleId = 'role-duties' | 'long-ball';
+export type TacticsModuleId = ShapeSlotModuleId | AttackSlotModuleId;
+export type TacticsSlot = 'shape' | 'attack';
 
 export interface TacticsMetrics {
-  /** 控球推进：把球送过中场并制造机会的能力。 */
   progression: number;
-  /** 边路保护：丢球后对边路空当的保护。 */
   wingProtection: number;
-  /** 中路保护：丢球后对禁区正面与肋部的保护。 */
   centralProtection: number;
-  /** 体能消耗：两套形态切换与职责要求的代价。 */
   stamina: number;
 }
 
@@ -41,19 +54,23 @@ export interface TacticsConfig {
   pivotDuty: PivotDutyId;
 }
 
+export interface TacticsLoadout {
+  shape: ShapeSlotModuleId | null;
+  attack: AttackSlotModuleId | null;
+}
+
 export interface TacticsState {
-  version: 1;
+  version: 2;
   phase: LevelPhase;
   mode: GameMode;
   fastPlay: boolean;
   seed: number;
   rng: RngState;
   config: TacticsConfig;
-  installed: { dualShape: boolean; roleDuties: boolean };
-  repairStep: RepairStep;
+  loadout: TacticsLoadout;
   fault: { played: FaultStageResult[]; done: boolean; demoPreloaded: boolean };
   diagnose: { resolved: boolean };
-  verify: { results: VerifyStageResult[]; done: boolean };
+  verify: { results: VerifyStageResult[]; done: boolean; attempts: number };
   transfer: { resolved: boolean; skipped: boolean };
   evidence: Evidence;
   eventLog: EventLogEntry[];
@@ -67,7 +84,101 @@ export interface TacticsInitOptions {
 }
 
 /* ==========================================================================
-   阵型与职责：玩家真正在维修面板里改的东西
+   模块池：两个槽位，每个槽位二选一
+   ========================================================================== */
+
+export interface TacticsModuleDefinition {
+  id: TacticsModuleId;
+  slot: TacticsSlot;
+  name: string;
+  englishName: string;
+  description: string;
+  /** 诚实的副作用说明，直接显示在模块卡上。 */
+  sideEffect: string;
+  /** 对验证指标的真实影响，一句话。 */
+  effect: string;
+  correct: boolean;
+}
+
+export const TACTICS_MODULES: TacticsModuleDefinition[] = [
+  {
+    id: 'dual-shape',
+    slot: 'shape',
+    name: '双形态战术',
+    englishName: 'In & Out of Possession',
+    description: '控球时与无球时各用一套阵型：有球形态负责推进与创造，无球形态负责保护与压迫。',
+    sideEffect: '两套形态切换需要训练与角色熟悉度；职责冲突会让球员在两套任务之间犹豫。',
+    effect: '验证时用你设置的有球/无球两套阵型计算推进与保护。',
+    correct: true,
+  },
+  {
+    id: 'man-marking',
+    slot: 'shape',
+    name: '全场人盯人',
+    englishName: 'Full-Pitch Man Marking',
+    description: '每个球员盯死一个人，靠抢断和压迫把球抢回来，看起来很有侵略性。',
+    sideEffect: '边路保护 −30、中路保护 −12、体能 +24；只要一次盯丢，身后就是整片空当。',
+    effect: '推进 +12、每阶段多 1 次抢断机会，但保护与体能明显变差。',
+    correct: false,
+  },
+  {
+    id: 'role-duties',
+    slot: 'attack',
+    name: '职责分工',
+    englishName: 'Role Duties',
+    description: '同一位置可以设置不同职责：边后卫套边或内收，后腰单人保护或双人保护。',
+    sideEffect: '职责越激进，控球收益越高，丢球后的回防距离也越长。',
+    effect: '验证时叠加你选择的边后卫/后腰职责指标。',
+    correct: true,
+  },
+  {
+    id: 'long-ball',
+    slot: 'attack',
+    name: '长传冲吊',
+    englishName: 'Route One',
+    description: '后场直接找中锋，跳过中场组织，全队少跑很多。',
+    sideEffect: '推进 −22、每阶段少 1 次创造机会、中路保护 −6；唯一优点是体能 −10。',
+    effect: '推进与创造机会下降，但省体能。',
+    correct: false,
+  },
+];
+
+export const MAN_MARKING_DELTAS: TacticsMetrics = {
+  progression: 12,
+  wingProtection: -30,
+  centralProtection: -12,
+  stamina: 24,
+};
+
+export const LONG_BALL_DELTAS: TacticsMetrics = {
+  progression: -22,
+  wingProtection: 4,
+  centralProtection: -6,
+  stamina: -10,
+};
+
+export const MAN_MARKING_CHANCE_BONUS = 1;
+export const LONG_BALL_CHANCE_PENALTY = 1;
+
+export function findTacticsModule(id: TacticsModuleId): TacticsModuleDefinition {
+  const module = TACTICS_MODULES.find((item) => item.id === id);
+  if (!module) throw new Error(`未知战术模块：${id}`);
+  return module;
+}
+
+export function moduleSlotOf(id: TacticsModuleId): TacticsSlot {
+  return findTacticsModule(id).slot;
+}
+
+export function loadoutModuleNames(loadout: TacticsLoadout): string[] {
+  const names: string[] = [];
+  if (loadout.shape) names.push(findTacticsModule(loadout.shape).name);
+  if (loadout.attack) names.push(findTacticsModule(loadout.attack).name);
+  return names;
+}
+
+/* ==========================================================================
+   阵型与职责
    ========================================================================== */
 
 export interface ShapeOption<T extends string> {
@@ -174,7 +285,6 @@ function findShape<T extends string>(options: ShapeOption<T>[], id: T): ShapeOpt
   return found;
 }
 
-/** 只看两套站位本身（还没有职责分工）的指标。 */
 export function shapeMetrics(possession: PossessionShapeId, out: OutShapeId): TacticsMetrics {
   const pos = findShape(POSSESSION_SHAPE_OPTIONS, possession).metrics;
   const outMetrics = findShape(OUT_SHAPE_OPTIONS, out).metrics;
@@ -186,7 +296,6 @@ export function shapeMetrics(possession: PossessionShapeId, out: OutShapeId): Ta
   };
 }
 
-/** 职责分工带来的加减值。 */
 export function dutyMetrics(fullback: FullbackDutyId, pivot: PivotDutyId): TacticsMetrics {
   const fb = findShape(FULLBACK_DUTY_OPTIONS, fullback).metrics;
   const pv = findShape(PIVOT_DUTY_OPTIONS, pivot).metrics;
@@ -198,15 +307,36 @@ export function dutyMetrics(fullback: FullbackDutyId, pivot: PivotDutyId): Tacti
   };
 }
 
-/** 双形态 + 职责分工后的完整指标；四个维度都在 0~100。 */
-export function tacticsMetrics(config: TacticsConfig): TacticsMetrics {
-  const shape = shapeMetrics(config.possessionShape, config.outOfPossessionShape);
-  const duty = dutyMetrics(config.fullbackDuty, config.pivotDuty);
+export function addMetrics(base: TacticsMetrics, delta: TacticsMetrics): TacticsMetrics {
   return {
-    progression: clampMetric(shape.progression + duty.progression),
-    wingProtection: clampMetric(shape.wingProtection + duty.wingProtection),
-    centralProtection: clampMetric(shape.centralProtection + duty.centralProtection),
-    stamina: clampMetric(shape.stamina + duty.stamina),
+    progression: clampMetric(base.progression + delta.progression),
+    wingProtection: clampMetric(base.wingProtection + delta.wingProtection),
+    centralProtection: clampMetric(base.centralProtection + delta.centralProtection),
+    stamina: clampMetric(base.stamina + delta.stamina),
+  };
+}
+
+/** 玩家当前的模块组合下，验证时真正生效的指标。 */
+export function verificationMetrics(state: Pick<TacticsState, 'config' | 'loadout'>): TacticsMetrics {
+  let metrics: TacticsMetrics = { ...FAULT_METRICS };
+  if (state.loadout.shape === 'dual-shape') {
+    metrics = shapeMetrics(state.config.possessionShape, state.config.outOfPossessionShape);
+  } else if (state.loadout.shape === 'man-marking') {
+    metrics = addMetrics(FAULT_METRICS, MAN_MARKING_DELTAS);
+  }
+  if (state.loadout.attack === 'role-duties') {
+    metrics = addMetrics(metrics, dutyMetrics(state.config.fullbackDuty, state.config.pivotDuty));
+  } else if (state.loadout.attack === 'long-ball') {
+    metrics = addMetrics(metrics, LONG_BALL_DELTAS);
+  }
+  return metrics;
+}
+
+/** 错误模块还会改变每阶段创造机会的次数，而不是只改指标。 */
+export function verificationChanceModifiers(state: Pick<TacticsState, 'loadout'>): { bonus: number; penalty: number } {
+  return {
+    bonus: state.loadout.shape === 'man-marking' ? MAN_MARKING_CHANCE_BONUS : 0,
+    penalty: state.loadout.attack === 'long-ball' ? LONG_BALL_CHANCE_PENALTY : 0,
   };
 }
 
@@ -271,7 +401,6 @@ export function faultInstructionName(id: FaultInstructionId): string {
   return FAULT_INSTRUCTIONS.find((item) => item.id === id)?.name ?? id;
 }
 
-/** 故障版结果完全确定：三个临场指令都改不了站位结构。 */
 export function simulateFaultStage(instruction: FaultInstructionId, stage: number): FaultStageResult {
   const row = FAULT_STAGE_TABLE[instruction];
   return { stage, instruction, note: FAULT_NOTES[instruction], ...row };
@@ -287,7 +416,7 @@ export function simulateFaultStages(stageCount: number): FaultStageResult[] {
 }
 
 /* ==========================================================================
-   修复版：对手固定倾向 + 两套形态 + 职责分工 + 阶段指令 + 少量随机波动
+   修复版：对手固定倾向 + 模块指标 + 阶段指令 + 少量随机波动
    ========================================================================== */
 
 export interface VerifyInstructionOption {
@@ -302,7 +431,6 @@ export const VERIFY_INSTRUCTIONS: VerifyInstructionOption[] = [
   { id: 'shrink-center', name: '收缩中路', hint: '放弃边路一点空间，把禁区正面堵死。' },
 ];
 
-/** 对手固定倾向：右路 60%、中路 20%、左路 20%（写在界面上，玩家可以据此做选择）。 */
 export const OPPONENT_TENDENCY: { side: AttackSide; label: string; chance: number }[] = [
   { side: 'right', label: '右路', chance: 60 },
   { side: 'center', label: '中路', chance: 20 },
@@ -352,11 +480,18 @@ function clampProtection(value: number): number {
   return Math.min(95, Math.max(5, Math.round(value)));
 }
 
-/** 只读的防线估计：界面用它解释「这一侧保护得怎么样」，不做隐藏的概率修正。 */
-export function sideProtection(config: TacticsConfig, side: AttackSide, instruction: VerifyInstructionId): number {
-  const metrics = tacticsMetrics(config);
+/** 只读的防线估计：界面用它解释「这一侧保护得怎么样」。 */
+export function sideProtection(metrics: TacticsMetrics, side: AttackSide, instruction: VerifyInstructionId): number {
   const base = side === 'center' ? metrics.centralProtection : metrics.wingProtection;
   return clampProtection(base + instructionProtection(instruction, side));
+}
+
+export interface VerifySimulationInput {
+  metrics: TacticsMetrics;
+  /** 人盯人每阶段多出的抢断机会。 */
+  chanceBonus?: number;
+  /** 长传冲吊每阶段少掉的机会。 */
+  chancePenalty?: number;
 }
 
 export interface VerifySimulation {
@@ -365,11 +500,11 @@ export interface VerifySimulation {
 }
 
 /**
- * 计算一个比赛阶段。
- * 每次抽取 4 个随机数：进攻方向、波动、是否失球、是否进球；结果只由当前配置、指令和随机数决定。
+ * 计算一个比赛阶段。每次抽取 4 个随机数：进攻方向、波动、是否失球、是否进球。
+ * 结果只由当前指标、阶段指令和随机数决定。
  */
 export function simulateVerifyStage(
-  config: TacticsConfig,
+  input: VerifySimulationInput,
   instruction: VerifyInstructionId,
   stage: number,
   rng: RngState,
@@ -378,16 +513,20 @@ export function simulateVerifyStage(
   const side: AttackSide = sideDraw.value < 60 ? 'right' : sideDraw.value < 80 ? 'center' : 'left';
   const varianceDraw = nextUnit(sideDraw.rng);
   const variance = Math.round((varianceDraw.value - 0.5) * 16);
-  const metrics = tacticsMetrics(config);
+  const metrics = input.metrics;
   const isWing = side !== 'center';
-  const protection = sideProtection(config, side, instruction);
+  const protection = sideProtection(metrics, side, instruction);
 
   const danger = Math.min(0.5, Math.max(0.03, 0.03 + ((100 - protection) / 100) * 0.42));
   const concedeDraw = nextUnit(varianceDraw.rng);
   const goalsAgainst = concedeDraw.value < danger * danger ? 2 : concedeDraw.value < danger ? 1 : 0;
 
   const attackPower = Math.max(20, metrics.progression + instructionAttack(instruction));
-  const chancesFor = Math.min(4, Math.max(1, Math.round((attackPower + variance * 0.4) / 28)));
+  const rawChances = Math.round((attackPower + variance * 0.4) / 28);
+  const chancesFor = Math.min(
+    4,
+    Math.max(1, rawChances + (input.chanceBonus ?? 0) - (input.chancePenalty ?? 0)),
+  );
   const finishDraw = nextUnit(concedeDraw.rng);
   const finishRate = Math.min(0.4, Math.max(0.06, attackPower / 260));
   const goalsFor = finishDraw.value < finishRate ? 1 : 0;
@@ -415,7 +554,7 @@ export function simulateVerifyStage(
 }
 
 export function simulateVerifyStages(
-  config: TacticsConfig,
+  input: VerifySimulationInput,
   instruction: VerifyInstructionId,
   stageCount: number,
   rng: RngState,
@@ -423,7 +562,7 @@ export function simulateVerifyStages(
   const results: VerifyStageResult[] = [];
   let currentRng = rng;
   for (let index = 0; index < stageCount; index += 1) {
-    const simulation = simulateVerifyStage(config, instruction, index + 1, currentRng);
+    const simulation = simulateVerifyStage(input, instruction, index + 1, currentRng);
     results.push(simulation.result);
     currentRng = simulation.rng;
   }
@@ -431,8 +570,26 @@ export function simulateVerifyStages(
 }
 
 /* ==========================================================================
-   对比与结算
+   验证目标
    ========================================================================== */
+
+export const TACTICS_TARGETS = {
+  /** 每阶段至少创造 2 次机会（按实际阶段数换算总额）。 */
+  chancesPerStage: 2,
+  goalsAgainstMax: 2,
+  wingGoalsAgainstMax: 1,
+  staminaMax: 78,
+};
+
+export type TacticsTargetId = 'modules' | 'chances' | 'goals' | 'wing' | 'stamina';
+
+export interface TargetCheck {
+  id: TacticsTargetId;
+  label: string;
+  requirement: string;
+  actual: string;
+  met: boolean;
+}
 
 export interface MatchTotals {
   chancesFor: number;
@@ -468,6 +625,66 @@ export function verifyTotals(results: VerifyStageResult[]): MatchTotals {
   }, emptyTotals());
 }
 
+export interface TacticsVerification {
+  /** 比赛阶段是否已经全部完成。 */
+  done: boolean;
+  passed: boolean;
+  totals: MatchTotals;
+  metrics: TacticsMetrics;
+  targets: TargetCheck[];
+  failed: TargetCheck[];
+}
+
+export function evaluateTacticsVerification(state: TacticsState): TacticsVerification {
+  const done = state.verify.done && state.verify.results.length >= requiredStages(state);
+  const stageCount = requiredStages(state);
+  const chancesRequired = stageCount * TACTICS_TARGETS.chancesPerStage;
+  const totals = verifyTotals(state.verify.results);
+  const metrics = verificationMetrics(state);
+  const installedNames = loadoutModuleNames(state.loadout);
+  const modulesCorrect = state.loadout.shape === 'dual-shape' && state.loadout.attack === 'role-duties';
+
+  const targets: TargetCheck[] = [
+    {
+      id: 'modules',
+      label: '维修模块正确',
+      requirement: '安装双形态战术 + 职责分工，且没有错误模块',
+      actual: installedNames.length > 0 ? `已安装：${installedNames.join('、')}` : '没有安装任何模块',
+      met: modulesCorrect,
+    },
+    {
+      id: 'chances',
+      label: '创造机会',
+      requirement: `≥ ${chancesRequired} 次（每阶段至少 ${TACTICS_TARGETS.chancesPerStage} 次）`,
+      actual: `${totals.chancesFor} 次`,
+      met: totals.chancesFor >= chancesRequired,
+    },
+    {
+      id: 'goals',
+      label: '失球',
+      requirement: `≤ ${TACTICS_TARGETS.goalsAgainstMax} 个`,
+      actual: `${totals.goalsAgainst} 个`,
+      met: totals.goalsAgainst <= TACTICS_TARGETS.goalsAgainstMax,
+    },
+    {
+      id: 'wing',
+      label: '边路丢球',
+      requirement: `≤ ${TACTICS_TARGETS.wingGoalsAgainstMax} 个`,
+      actual: `${totals.wingGoalsAgainst} 个`,
+      met: totals.wingGoalsAgainst <= TACTICS_TARGETS.wingGoalsAgainstMax,
+    },
+    {
+      id: 'stamina',
+      label: '体能消耗',
+      requirement: `≤ ${TACTICS_TARGETS.staminaMax}`,
+      actual: `${metrics.stamina}`,
+      met: metrics.stamina <= TACTICS_TARGETS.staminaMax,
+    },
+  ];
+  const failed = targets.filter((target) => !target.met);
+  return { done, passed: done && failed.length === 0, totals, metrics, targets, failed };
+}
+
 export interface TacticsComparisonRow {
   label: string;
   fault: string;
@@ -484,6 +701,53 @@ export function buildTacticsComparison(state: TacticsState): TacticsComparisonRo
     { label: '失球', fault: `${fault.goalsAgainst} 个`, fixed: `${fixed.goalsAgainst} 个` },
     { label: '边路丢球', fault: `${fault.wingGoalsAgainst} 个`, fixed: `${fixed.wingGoalsAgainst} 个` },
   ];
+}
+
+/* ==========================================================================
+   阶段指令与对手倾向的对应（界面用于把选择讲清楚）
+   ========================================================================== */
+
+export interface InstructionMappingRow {
+  instruction: VerifyInstructionId;
+  name: string;
+  hint: string;
+  rightProtection: number;
+  centerProtection: number;
+  leftProtection: number;
+  note: string;
+}
+
+export function protectionRiskLabel(value: number): string {
+  if (value >= 80) return '稳';
+  if (value >= 65) return '可控';
+  if (value >= 50) return '吃紧';
+  return '危险';
+}
+
+export function buildInstructionMapping(state: Pick<TacticsState, 'config' | 'loadout'>): InstructionMappingRow[] {
+  const metrics = verificationMetrics(state);
+  return VERIFY_INSTRUCTIONS.map((instruction) => {
+    const right = sideProtection(metrics, 'right', instruction.id);
+    const center = sideProtection(metrics, 'center', instruction.id);
+    const left = sideProtection(metrics, 'left', instruction.id);
+    let note: string;
+    if (instruction.id === 'press-strong') {
+      note = `对手 60% 从右路来：压上强侧把右路保护提到 ${right}（${protectionRiskLabel(right)}），但两翼身后会暴露。`;
+    } else if (instruction.id === 'cover-wing') {
+      note = `右路保护 ${right}、左路 ${left}（${protectionRiskLabel(right)}），中路保护降到 ${center}：先堵最常走的边路。`;
+    } else {
+      note = `中路保护 ${center}（${protectionRiskLabel(center)}），但右路保护只有 ${right}：对手最常走的右路会变危险。`;
+    }
+    return {
+      instruction: instruction.id,
+      name: instruction.name,
+      hint: instruction.hint,
+      rightProtection: right,
+      centerProtection: center,
+      leftProtection: left,
+      note,
+    };
+  });
 }
 
 /* ==========================================================================
@@ -552,23 +816,15 @@ export const TRANSFER_OPTIONS: QuizOptionData[] = [
 ];
 
 /* ==========================================================================
-   状态机：所有合法操作都返回新状态并写事件日志；非法操作原样返回
+   状态机
    ========================================================================== */
 
 function isPhase(value: unknown): value is LevelPhase {
   return typeof value === 'string' && (PHASE_ORDER as string[]).includes(value);
 }
 
-export function requiredStages(state: TacticsState): number {
+export function requiredStages(state: Pick<TacticsState, 'fastPlay'>): number {
   return state.fastPlay ? 2 : 3;
-}
-
-export function faultStageCount(state: TacticsState): number {
-  return state.fault.played.length;
-}
-
-export function verifyStageCount(state: TacticsState): number {
-  return state.verify.results.length;
 }
 
 function withEvent(
@@ -641,151 +897,168 @@ export function resolveDiagnose(state: TacticsState): TacticsState {
     label: '诊断正确：控球和无球需要两套不同的站位与职责',
     before: { resolved: 'false' },
     after: { resolved: 'true' },
-    note: '下一步去维修面板，把两套形态与职责真正装上。',
+    note: '下一步去维修台：可以从 4 个模块里自由安装/卸载，再决定怎么验证。',
   });
 }
 
 export function startRepair(state: TacticsState): TacticsState {
   if (state.phase !== 'diagnose' || !state.diagnose.resolved) return state;
-  const repairStep: RepairStep = state.installed.roleDuties ? 'done' : state.installed.dualShape ? 'duty' : 'shape';
-  const next: TacticsState = { ...state, phase: 'repair', repairStep };
+  const next: TacticsState = { ...state, phase: 'repair', verify: { ...state.verify, results: [], done: false } };
   return withEvent(next, 'repair', {
     action: 'start-repair',
-    label: '开始维修：安装双形态战术与职责分工',
+    label: '开始维修：模块池自由配置',
     before: { phase: 'diagnose' },
-    after: { phase: 'repair', step: repairStep },
-    note: '先选两套阵型，再给同一批球员设置两种阶段的职责。',
+    after: { phase: 'repair' },
+    note: '两套形态负责站位，职责分工负责任务；错误模块也能装，但要承担真实副作用。',
   });
 }
 
+/* ---------- 维修台的模块操作（仅 repair 阶段） ---------- */
+
+export function installTacticsModule(state: TacticsState, id: TacticsModuleId): TacticsState {
+  if (state.phase !== 'repair') return state;
+  if (!TACTICS_MODULES.some((item) => item.id === id)) return state;
+  const module = findTacticsModule(id);
+  if (state.loadout[module.slot] === id) return state;
+  const previous = state.loadout[module.slot];
+  const next: TacticsState = { ...state, loadout: { ...state.loadout, [module.slot]: id } };
+  return withEvent(next, 'repair', {
+    action: `install-module-${id}`,
+    label: `安装模块：${module.name}`,
+    before: { slot: module.slot, installed: previous ?? '空' },
+    after: { slot: module.slot, installed: module.name, effect: module.effect },
+    delta: module.correct ? '正确模块' : '错误模块（有副作用）',
+    note: module.sideEffect,
+  });
+}
+
+export function uninstallTacticsModule(state: TacticsState, id: TacticsModuleId): TacticsState {
+  if (state.phase !== 'repair') return state;
+  const module = findTacticsModule(id);
+  if (state.loadout[module.slot] !== id) return state;
+  const next: TacticsState = { ...state, loadout: { ...state.loadout, [module.slot]: null } };
+  return withEvent(next, 'repair', {
+    action: `uninstall-module-${id}`,
+    label: `卸载模块：${module.name}`,
+    before: { slot: module.slot, installed: module.name },
+    after: { slot: module.slot, installed: '空' },
+  });
+}
+
+export function toggleTacticsModule(state: TacticsState, id: TacticsModuleId): TacticsState {
+  if (state.phase !== 'repair') return state;
+  const module = findTacticsModule(id);
+  return state.loadout[module.slot] === id ? uninstallTacticsModule(state, id) : installTacticsModule(state, id);
+}
+
 export function selectPossessionShape(state: TacticsState, shape: PossessionShapeId): TacticsState {
-  if (state.phase !== 'repair' || state.repairStep !== 'shape' || state.installed.dualShape) return state;
+  if (state.phase !== 'repair') return state;
   if (!POSSESSION_SHAPE_OPTIONS.some((item) => item.id === shape)) return state;
   if (state.config.possessionShape === shape) return state;
-  const before = tacticsMetrics(state.config);
+  const before = verificationMetrics(state);
   const next: TacticsState = { ...state, config: { ...state.config, possessionShape: shape } };
-  const after = shapeMetrics(shape, state.config.outOfPossessionShape);
+  const after = verificationMetrics(next);
   return withEvent(next, 'repair', {
     action: 'select-possession-shape',
     label: `选择有球形态：${shape}`,
     before: { progression: before.progression, wingProtection: before.wingProtection },
     after: { progression: after.progression, wingProtection: after.wingProtection },
-    note: '有球形态负责推进与创造，改它先改变的是控球阶段的结构。',
+    delta: `推进 ${formatMetricDelta(after.progression - before.progression)}`,
+    note: '有球形态负责推进与创造；只有安装「双形态战术」后才会在验证里生效。',
   });
 }
 
 export function selectOutShape(state: TacticsState, shape: OutShapeId): TacticsState {
-  if (state.phase !== 'repair' || state.repairStep !== 'shape' || state.installed.dualShape) return state;
+  if (state.phase !== 'repair') return state;
   if (!OUT_SHAPE_OPTIONS.some((item) => item.id === shape)) return state;
   if (state.config.outOfPossessionShape === shape) return state;
-  const before = shapeMetrics(state.config.possessionShape, state.config.outOfPossessionShape);
+  const before = verificationMetrics(state);
   const next: TacticsState = { ...state, config: { ...state.config, outOfPossessionShape: shape } };
-  const after = shapeMetrics(state.config.possessionShape, shape);
+  const after = verificationMetrics(next);
   return withEvent(next, 'repair', {
     action: 'select-out-shape',
     label: `选择无球形态：${OUT_SHAPE_OPTIONS.find((item) => item.id === shape)?.name ?? shape}`,
     before: { wingProtection: before.wingProtection, centralProtection: before.centralProtection },
     after: { wingProtection: after.wingProtection, centralProtection: after.centralProtection },
-    note: '无球形态负责丢球后的保护，改它改变的是丢球阶段的站位。',
-  });
-}
-
-export function installDualShape(state: TacticsState): TacticsState {
-  if (state.phase !== 'repair' || state.repairStep !== 'shape' || state.installed.dualShape) return state;
-  const next: TacticsState = {
-    ...state,
-    installed: { ...state.installed, dualShape: true },
-    repairStep: 'duty',
-  };
-  return withEvent(next, 'repair', {
-    action: 'install-dual-shape',
-    label: '安装双形态战术：有球形态与无球形态各一套',
-    before: { dualShape: 'false' },
-    after: { dualShape: 'true', possession: state.config.possessionShape, out: state.config.outOfPossessionShape },
-    note: '同一批球员在控球与丢球后执行两套不同站位；下一步设置职责。',
+    delta: `边路保护 ${formatMetricDelta(after.wingProtection - before.wingProtection)}`,
+    note: '无球形态负责丢球后的保护；只有安装「双形态战术」后才会在验证里生效。',
   });
 }
 
 export function selectFullbackDuty(state: TacticsState, duty: FullbackDutyId): TacticsState {
-  if (state.phase !== 'repair' || state.repairStep !== 'duty' || state.installed.roleDuties) return state;
+  if (state.phase !== 'repair') return state;
   if (!FULLBACK_DUTY_OPTIONS.some((item) => item.id === duty)) return state;
   if (state.config.fullbackDuty === duty) return state;
-  const before = tacticsMetrics(state.config);
+  const before = verificationMetrics(state);
   const next: TacticsState = { ...state, config: { ...state.config, fullbackDuty: duty } };
-  const after = tacticsMetrics(next.config);
+  const after = verificationMetrics(next);
   return withEvent(next, 'repair', {
     action: 'select-fullback-duty',
     label: `选择边后卫职责：${FULLBACK_DUTY_OPTIONS.find((item) => item.id === duty)?.name ?? duty}`,
     before: { progression: before.progression, wingProtection: before.wingProtection },
     after: { progression: after.progression, wingProtection: after.wingProtection },
-    note: '职责越激进，控球收益越高，丢球后的回防距离也越长。',
+    delta: `边路保护 ${formatMetricDelta(after.wingProtection - before.wingProtection)}`,
+    note: '套边压上提供宽度；内收进入中场保护中路。阵型图会画出对应的跑位。',
   });
 }
 
 export function selectPivotDuty(state: TacticsState, duty: PivotDutyId): TacticsState {
-  if (state.phase !== 'repair' || state.repairStep !== 'duty' || state.installed.roleDuties) return state;
+  if (state.phase !== 'repair') return state;
   if (!PIVOT_DUTY_OPTIONS.some((item) => item.id === duty)) return state;
   if (state.config.pivotDuty === duty) return state;
-  const before = tacticsMetrics(state.config);
+  const before = verificationMetrics(state);
   const next: TacticsState = { ...state, config: { ...state.config, pivotDuty: duty } };
-  const after = tacticsMetrics(next.config);
+  const after = verificationMetrics(next);
   return withEvent(next, 'repair', {
     action: 'select-pivot-duty',
     label: `选择后腰职责：${PIVOT_DUTY_OPTIONS.find((item) => item.id === duty)?.name ?? duty}`,
     before: { centralProtection: before.centralProtection, stamina: before.stamina },
     after: { centralProtection: after.centralProtection, stamina: after.stamina },
-    note: '双后腰保护更稳，但会少一个前场接应点。',
-  });
-}
-
-export function installRoleDuties(state: TacticsState): TacticsState {
-  if (state.phase !== 'repair' || state.repairStep !== 'duty' || state.installed.roleDuties) return state;
-  const next: TacticsState = {
-    ...state,
-    installed: { ...state.installed, roleDuties: true },
-    repairStep: 'done',
-  };
-  return withEvent(next, 'repair', {
-    action: 'install-role-duties',
-    label: '安装职责分工：边后卫与后腰在两种阶段承担不同任务',
-    before: { roleDuties: 'false' },
-    after: {
-      roleDuties: 'true',
-      fullback: FULLBACK_DUTY_OPTIONS.find((item) => item.id === state.config.fullbackDuty)?.name ?? state.config.fullbackDuty,
-      pivot: PIVOT_DUTY_OPTIONS.find((item) => item.id === state.config.pivotDuty)?.name ?? state.config.pivotDuty,
-    },
-    note: '同一名球员在控球时做一件事、丢球后做另一件事；代价是体能与训练成本。',
+    delta: `中路保护 ${formatMetricDelta(after.centralProtection - before.centralProtection)}`,
+    note: '双后腰保护更稳，但会少一个前场接应点。阵型图会显示后腰数量。',
   });
 }
 
 export function startVerify(state: TacticsState): TacticsState {
-  if (state.phase !== 'repair' || state.repairStep !== 'done') return state;
-  if (!state.installed.dualShape || !state.installed.roleDuties) return state;
-  const next: TacticsState = { ...state, phase: 'verify' };
+  if (state.phase !== 'repair') return state;
+  const next: TacticsState = {
+    ...state,
+    phase: 'verify',
+    verify: { results: [], done: false, attempts: state.verify.attempts },
+  };
   return withEvent(next, 'verify', {
     action: 'start-verify',
-    label: `开始验证：${requiredStages(state)} 个比赛阶段`,
-    before: { phase: 'repair' },
+    label: `开始验证：${requiredStages(state)} 个比赛阶段（第 ${state.verify.attempts + 1} 次尝试）`,
+    before: { phase: 'repair', modules: loadoutModuleNames(state.loadout).join('、') || '无' },
     after: { phase: 'verify', stages: requiredStages(state) },
-    note: '对手固定倾向：右路 60%、中路 20%、左路 20%；每个阶段选一条指令。',
+    note: '目标会在比赛结束后逐条判定；未达成可以回到维修台重新配置。',
   });
 }
 
 export function chooseVerifyInstruction(state: TacticsState, instruction: VerifyInstructionId): TacticsState {
   if (state.phase !== 'verify' || state.verify.done || !isVerifyInstruction(instruction)) return state;
-  if (!state.installed.dualShape || !state.installed.roleDuties) return state;
   const stages = requiredStages(state);
   const stage = state.verify.results.length + 1;
   if (stage > stages) return state;
-  const simulation = simulateVerifyStage(state.config, instruction, stage, state.rng);
+  const metrics = verificationMetrics(state);
+  const modifiers = verificationChanceModifiers(state);
+  const simulation = simulateVerifyStage(
+    { metrics, chanceBonus: modifiers.bonus, chancePenalty: modifiers.penalty },
+    instruction,
+    stage,
+    state.rng,
+  );
   const results = [...state.verify.results, simulation.result];
   const done = results.length >= stages;
   const next: TacticsState = {
     ...state,
     rng: simulation.rng,
-    verify: { results, done },
-    evidence: done ? { ...state.evidence, operatedMechanic: true } : state.evidence,
+    verify: { ...state.verify, results, done },
   };
+  const verification = done ? evaluateTacticsVerification(next) : null;
+  if (verification?.passed) {
+    next.evidence = { ...next.evidence, operatedMechanic: true };
+  }
   return withEvent(next, 'verify', {
     action: `verify-stage-${stage}`,
     label: `验证第 ${stage} 阶段：${verifyInstructionName(instruction)}`,
@@ -801,8 +1074,31 @@ export function chooseVerifyInstruction(state: TacticsState, instruction: Verify
   });
 }
 
+/** 验证失败后回到维修台：清空本轮成绩，保留故障证据，模块配置保留以便调整。 */
+export function retryVerification(state: TacticsState): TacticsState {
+  if (state.phase !== 'verify' || !state.verify.done) return state;
+  const verification = evaluateTacticsVerification(state);
+  if (verification.passed) return state;
+  const next: TacticsState = {
+    ...state,
+    phase: 'repair',
+    verify: { results: [], done: false, attempts: state.verify.attempts + 1 },
+  };
+  return withEvent(next, 'repair', {
+    action: 'retry-verification',
+    label: '验证未达成：回到维修台重新配置',
+    before: { phase: 'verify', chancesFor: verification.totals.chancesFor, goalsAgainst: verification.totals.goalsAgainst },
+    after: { phase: 'repair', attempts: next.verify.attempts },
+    delta: `未达成 ${verification.failed.length} 项目标`,
+    note: `未达成：${verification.failed
+      .map((target) => `${target.label}（${target.actual}，要求 ${target.requirement}）`)
+      .join('；')}。本轮验证成绩已清空。`,
+  });
+}
+
 export function openTransfer(state: TacticsState): TacticsState {
   if (state.phase !== 'verify' || !state.verify.done) return state;
+  if (!evaluateTacticsVerification(state).passed) return state;
   const next: TacticsState = { ...state, phase: 'transfer' };
   return withEvent(next, 'transfer', {
     action: 'open-transfer',
@@ -858,12 +1154,35 @@ export function openSummary(state: TacticsState): TacticsState {
   });
 }
 
+export type CompleteBlocker = 'not-summary' | 'already-complete' | 'verify-unmet' | 'transfer-missing' | 'prereq-missing';
+
+/** 归档前逻辑检查：未达成验证目标或未完成迁移时返回具体原因。 */
+export function archiveBlocker(state: TacticsState): CompleteBlocker | null {
+  if (state.phase !== 'summary') return 'not-summary';
+  if (state.completed) return 'already-complete';
+  const verification = evaluateTacticsVerification(state);
+  if (!verification.passed) return 'verify-unmet';
+  if (state.mode !== 'showcase' && (!state.fault.done || !state.diagnose.resolved)) return 'prereq-missing';
+  if (state.mode !== 'showcase' && !state.transfer.resolved) return 'transfer-missing';
+  return null;
+}
+
 export function canComplete(state: TacticsState): boolean {
-  if (state.phase !== 'summary' || state.completed) return false;
-  if (!state.verify.done) return false;
-  if (!state.installed.dualShape || !state.installed.roleDuties) return false;
-  if (state.mode === 'showcase') return true;
-  return state.fault.done && state.diagnose.resolved && state.transfer.resolved;
+  return archiveBlocker(state) === null;
+}
+
+export function archiveBlockReason(state: TacticsState): string {
+  const blocker = archiveBlocker(state);
+  if (blocker === 'already-complete') return '已经归档完成，不会重复结算。';
+  if (blocker === 'verify-unmet') {
+    const failed = evaluateTacticsVerification(state).failed;
+    return `验证目标未达成：${failed
+      .map((target) => `${target.label}（${target.actual}，要求 ${target.requirement}）`)
+      .join('；')}。请回到维修台重新配置。`;
+  }
+  if (blocker === 'transfer-missing') return '迁移题还没有答对，完成迁移后才能归档。';
+  if (blocker === 'prereq-missing') return '还没有完成故障试玩与诊断，不能直接归档。';
+  return '还没有完成验证与迁移，暂时不能归档。';
 }
 
 export function completeArchive(state: TacticsState): TacticsState {
@@ -889,16 +1208,46 @@ export function buildArchiveSummary(state: TacticsState): string[] {
   const out = OUT_SHAPE_OPTIONS.find((item) => item.id === config.outOfPossessionShape)?.name ?? config.outOfPossessionShape;
   const fullback = FULLBACK_DUTY_OPTIONS.find((item) => item.id === config.fullbackDuty)?.name ?? config.fullbackDuty;
   const pivot = PIVOT_DUTY_OPTIONS.find((item) => item.id === config.pivotDuty)?.name ?? config.pivotDuty;
-  const metrics = tacticsMetrics(config);
+  const metrics = verificationMetrics(state);
+  const verification = evaluateTacticsVerification(state);
   return [
     `改了哪条规则：把「一套 4-4-2 打满全场」改成「有球形态 ${possession} + 无球形态 ${out}」两套站位，并给边后卫与后腰设置职责。`,
     `改变了什么选择：控球时用 ${possession} 推进；丢球后落到 ${out}；边后卫${fullback}、后腰${pivot}，同一名球员在两种阶段做不同的任务。`,
-    `产生了什么代价：体能消耗上升到 ${metrics.stamina}，职责切换需要训练；压上强侧能抢回主动，但会暂时放大身后的空间。`,
+    `产生了什么代价：体能消耗 ${FAULT_METRICS.stamina} → ${metrics.stamina}（目标上限 ${TACTICS_TARGETS.staminaMax}）；最终验证创造机会 ${verification.totals.chancesFor} 次、失球 ${verification.totals.goalsAgainst} 个、边路丢球 ${verification.totals.wingGoalsAgainst} 个。`,
   ];
 }
 
-export function buildCompletionResult(state: TacticsState): { evidence: Evidence; summary: string[] } {
-  return { evidence: { ...state.evidence }, summary: buildArchiveSummary(state) };
+/* ==========================================================================
+   俱乐部时间线：只写真实数据
+   ========================================================================== */
+
+export function buildClubUpdate(state: TacticsState): ClubUpdate {
+  const fault = faultTotals(state.fault.played);
+  const fixed = verifyTotals(state.verify.results);
+  const metrics = verificationMetrics(state);
+  const config = state.config;
+  const possession = POSSESSION_SHAPE_OPTIONS.find((item) => item.id === config.possessionShape)?.name ?? config.possessionShape;
+  const out = OUT_SHAPE_OPTIONS.find((item) => item.id === config.outOfPossessionShape)?.name ?? config.outOfPossessionShape;
+  const fullback = FULLBACK_DUTY_OPTIONS.find((item) => item.id === config.fullbackDuty)?.name ?? config.fullbackDuty;
+  const pivot = PIVOT_DUTY_OPTIONS.find((item) => item.id === config.pivotDuty)?.name ?? config.pivotDuty;
+  return {
+    headline: `战术板上线：边路丢球 ${fault.wingGoalsAgainst} → ${fixed.wingGoalsAgainst}，失球 ${fault.goalsAgainst} → ${fixed.goalsAgainst}`,
+    details: [
+      `故障版 ${state.fault.played.length} 个阶段：创造 ${fault.chancesFor} 次机会，失 ${fault.goalsAgainst} 球，其中边路丢 ${fault.wingGoalsAgainst} 球。`,
+      `修复版 ${state.verify.results.length} 个阶段：有球 ${possession}、无球 ${out}，边后卫${fullback}、后腰${pivot}；创造 ${fixed.chancesFor} 次机会，失 ${fixed.goalsAgainst} 球，其中边路丢 ${fixed.wingGoalsAgainst} 球。`,
+      `代价与取舍：体能消耗 ${FAULT_METRICS.stamina} → ${metrics.stamina}（目标上限 ${TACTICS_TARGETS.staminaMax}）；边路保护 ${FAULT_METRICS.wingProtection} → ${metrics.wingProtection}，中路保护 ${FAULT_METRICS.centralProtection} → ${metrics.centralProtection}。`,
+      `验证目标全部达成：机会≥${state.verify.results.length * TACTICS_TARGETS.chancesPerStage}、失球≤${TACTICS_TARGETS.goalsAgainstMax}、边路丢球≤${TACTICS_TARGETS.wingGoalsAgainstMax}、体能≤${TACTICS_TARGETS.staminaMax}。`,
+    ],
+    nextBrief: '球探室还在用「点一下就看到全部属性」的老办法，首席球探周远需要一套有限球探与知识度报告。',
+  };
+}
+
+export function buildCompletionResult(state: TacticsState): { evidence: Evidence; summary: string[]; clubUpdate: ClubUpdate } {
+  return {
+    evidence: { ...state.evidence },
+    summary: buildArchiveSummary(state),
+    clubUpdate: buildClubUpdate(state),
+  };
 }
 
 /* ==========================================================================
@@ -920,18 +1269,17 @@ function createBaseState(options: TacticsInitOptions, seed: number, phase: Level
   const fastPlay = options.mode === 'showcase' && options.showcaseOptions?.fastPlay === true;
   const normalizedSeed = normalizeSeed(seed);
   return {
-    version: 1,
+    version: 2,
     phase,
     mode: options.mode,
     fastPlay,
     seed: normalizedSeed,
     rng: createRng(normalizedSeed),
     config: { ...DEFAULT_TACTICS_CONFIG },
-    installed: { dualShape: false, roleDuties: false },
-    repairStep: 'shape',
+    loadout: { shape: null, attack: null },
     fault: { played: [], done: false, demoPreloaded: false },
     diagnose: { resolved: false },
-    verify: { results: [], done: false },
+    verify: { results: [], done: false, attempts: 0 },
     transfer: { resolved: false, skipped: false },
     evidence: createEvidence(),
     eventLog: [],
@@ -941,8 +1289,8 @@ function createBaseState(options: TacticsInitOptions, seed: number, phase: Level
 
 /**
  * 创建初始状态。展示模式按 startPhase 预填前置步骤：
- * repair = 已诊断完成，verify = 两个模块已安装、可以直接试玩。
- * 预填的故障记录来自同一套规则基线，但不会把「体验故障」证据写成已完成。
+ * repair = 诊断完成、模块未装；verify = 两个正确模块已装，可以直接试玩。
+ * 预填不会把玩家没做过的步骤写成证据。
  */
 export function createInitialTacticsState(options: TacticsInitOptions, seed: number): TacticsState {
   const phase = requestedPhase(options);
@@ -961,18 +1309,15 @@ export function createInitialTacticsState(options: TacticsInitOptions, seed: num
       ...state,
       fault: { played: baseline, done: true, demoPreloaded: true },
       diagnose: { resolved: true },
-      repairStep: 'shape',
     };
   }
 
-  // verify（以及无法识别的阶段回退）：模块已安装，比赛记录仍为规则基线。
   return {
     ...state,
     phase: 'verify',
     fault: { played: baseline, done: true, demoPreloaded: true },
     diagnose: { resolved: true },
-    installed: { dualShape: true, roleDuties: true },
-    repairStep: 'done',
+    loadout: { shape: 'dual-shape', attack: 'role-duties' },
   };
 }
 
@@ -1020,6 +1365,15 @@ function isConfig(value: unknown): value is TacticsConfig {
   );
 }
 
+function isLoadout(value: unknown): value is TacticsLoadout {
+  if (!isObject(value)) return false;
+  const shape = value.shape;
+  const attack = value.attack;
+  const shapeOk = shape === null || shape === 'dual-shape' || shape === 'man-marking';
+  const attackOk = attack === null || attack === 'role-duties' || attack === 'long-ball';
+  return shapeOk && attackOk;
+}
+
 function isFaultStageResult(value: unknown): value is FaultStageResult {
   if (!isObject(value)) return false;
   return (
@@ -1059,12 +1413,12 @@ function isEvidenceShape(value: unknown): value is Evidence {
 }
 
 /**
- * 校验并恢复存档。任何结构不合法都返回 null，由调用方从新状态开始；
- * 存档里的 mode / fastPlay 必须与当前上下文一致，避免两个模式共用一份状态。
+ * 校验并恢复存档（只接受 v2 结构；旧版存档安全回退）。
+ * 存档里的 mode / fastPlay 必须与当前上下文一致。
  */
 export function reviveTacticsState(raw: unknown, options: TacticsInitOptions): TacticsState | null {
   if (!isObject(raw)) return null;
-  if (raw.version !== 1) return null;
+  if (raw.version !== 2) return null;
   if (!isPhase(raw.phase)) return null;
   const mode = raw.mode;
   if (mode !== 'normal' && mode !== 'showcase') return null;
@@ -1074,10 +1428,7 @@ export function reviveTacticsState(raw: unknown, options: TacticsInitOptions): T
   if (raw.fastPlay !== expectedFastPlay) return null;
   if (!isFiniteNumber(raw.seed) || !isRngState(raw.rng)) return null;
   if (!isConfig(raw.config)) return null;
-  const installed = raw.installed;
-  if (!isObject(installed) || !isBoolean(installed.dualShape) || !isBoolean(installed.roleDuties)) return null;
-  const repairStep = raw.repairStep;
-  if (repairStep !== 'shape' && repairStep !== 'duty' && repairStep !== 'done') return null;
+  if (!isLoadout(raw.loadout)) return null;
   const fault = raw.fault;
   if (!isObject(fault) || !Array.isArray(fault.played) || !fault.played.every(isFaultStageResult)) return null;
   if (!isBoolean(fault.done) || !isBoolean(fault.demoPreloaded)) return null;
@@ -1085,57 +1436,54 @@ export function reviveTacticsState(raw: unknown, options: TacticsInitOptions): T
   if (!isObject(diagnose) || !isBoolean(diagnose.resolved)) return null;
   const verify = raw.verify;
   if (!isObject(verify) || !Array.isArray(verify.results) || !verify.results.every(isVerifyStageResult)) return null;
-  if (!isBoolean(verify.done)) return null;
+  if (!isBoolean(verify.done) || !isFiniteNumber(verify.attempts) || verify.attempts < 0) return null;
   const transfer = raw.transfer;
   if (!isObject(transfer) || !isBoolean(transfer.resolved) || !isBoolean(transfer.skipped)) return null;
   if (!isEvidenceShape(raw.evidence)) return null;
   if (!isValidEventLog(raw.eventLog)) return null;
   if (!isBoolean(raw.completed)) return null;
-  // 交叉校验：阶段不能早于已完成的前置步骤，避免读档绕过验证。
-  if (verify.results.length > 0 && (!installed.dualShape || !installed.roleDuties)) return null;
-  if (fault.played.length > (raw.fastPlay ? 2 : 3)) return null;
-  if (verify.results.length > (raw.fastPlay ? 2 : 3)) return null;
-  if (installed.roleDuties && repairStep !== 'done') return null;
-  if (!installed.roleDuties && installed.dualShape && repairStep !== 'duty') return null;
-  if (!installed.dualShape && repairStep !== 'shape') return null;
-  if (
-    (raw.phase === 'verify' || raw.phase === 'transfer' || raw.phase === 'summary') &&
-    (!installed.dualShape || !installed.roleDuties || !verify.done)
-  ) {
-    return null;
-  }
 
-  const rng = reviveRng(raw.rng);
-  const eventLog = [...(raw.eventLog as EventLogEntry[])];
+  const stageLimit = raw.fastPlay ? 2 : 3;
+  if (fault.played.length > stageLimit) return null;
+  if (verify.results.length > stageLimit) return null;
+  if (verify.done && verify.results.length !== stageLimit) return null;
+  if (raw.phase === 'repair' && verify.results.length > 0) return null;
+  if (raw.phase === 'commission' && fault.played.length > 0) return null;
+  if ((raw.phase === 'transfer' || raw.phase === 'summary') && !verify.done) return null;
+  if (raw.phase === 'summary' && raw.mode === 'normal' && !transfer.resolved) return null;
+
   return {
-    version: 1,
+    version: 2,
     phase: raw.phase,
     mode,
     fastPlay: raw.fastPlay,
     seed: normalizeSeed(raw.seed),
-    rng,
+    rng: reviveRng(raw.rng),
     config: { ...(raw.config as TacticsConfig) },
-    installed: { dualShape: installed.dualShape, roleDuties: installed.roleDuties },
-    repairStep,
+    loadout: { shape: (raw.loadout as TacticsLoadout).shape, attack: (raw.loadout as TacticsLoadout).attack },
     fault: {
       played: [...(fault.played as FaultStageResult[])],
       done: fault.done,
       demoPreloaded: fault.demoPreloaded,
     },
     diagnose: { resolved: diagnose.resolved },
-    verify: { results: [...(verify.results as VerifyStageResult[])], done: verify.done },
+    verify: {
+      results: [...(verify.results as VerifyStageResult[])],
+      done: verify.done,
+      attempts: Math.floor(verify.attempts),
+    },
     transfer: { resolved: transfer.resolved, skipped: transfer.skipped },
     evidence: {
       experiencedFault: (raw.evidence as Evidence).experiencedFault,
       operatedMechanic: (raw.evidence as Evidence).operatedMechanic,
       transferred: (raw.evidence as Evidence).transferred,
     },
-    eventLog,
+    eventLog: [...(raw.eventLog as EventLogEntry[])],
     completed: raw.completed,
   };
 }
 
-/** 仅供界面展示：某一阵型/职责的指标摘要文字。 */
+/** 界面用：某阵型/职责的指标摘要文字。 */
 export function metricsSummary(metrics: TacticsMetrics): string {
   return `推进 ${metrics.progression} · 边路保护 ${metrics.wingProtection} · 中路保护 ${metrics.centralProtection} · 体能 ${metrics.stamina}`;
 }

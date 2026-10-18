@@ -141,6 +141,63 @@ describe('进度汇总', () => {
   });
 });
 
+describe('俱乐部时间线', () => {
+  const WITH_CLUB: LevelCompletion = {
+    ...COMPLETION,
+    clubUpdate: {
+      headline: '联赛第 1 轮：边路丢球从 4 次降到 1 次',
+      details: ['失球 2 → 1', '边路丢球 4 → 1', '体能消耗 58 → 70'],
+      nextBrief: '球探室收到一份边锋候选报告。',
+    },
+  };
+
+  it('正常完成时把真实结果写入俱乐部时间线', () => {
+    const outcome = applyLevelCompletion(
+      getDefaultProgress(),
+      createEmptyDemo(),
+      'tactics',
+      WITH_CLUB,
+      'normal',
+      NOW,
+    );
+    expect(outcome.progress.club.timeline).toHaveLength(1);
+    const entry = outcome.progress.club.timeline[0];
+    expect(entry.levelId).toBe('tactics');
+    expect(entry.headline).toBe(WITH_CLUB.clubUpdate?.headline);
+    expect(entry.details).toEqual(WITH_CLUB.clubUpdate?.details);
+    expect(entry.at).toBe(NOW);
+  });
+
+  it('展示模式与重复完成不会写入俱乐部时间线', () => {
+    const showcase = applyLevelCompletion(
+      getDefaultProgress(),
+      createEmptyDemo(),
+      'tactics',
+      WITH_CLUB,
+      'showcase',
+      NOW,
+    );
+    expect(showcase.progress.club.timeline).toEqual([]);
+
+    const first = applyLevelCompletion(getDefaultProgress(), createEmptyDemo(), 'tactics', WITH_CLUB, 'normal', NOW);
+    const repeated = applyLevelCompletion(first.progress, first.demo, 'tactics', WITH_CLUB, 'normal', NOW);
+    expect(repeated.progress.club.timeline).toHaveLength(1);
+  });
+
+  it('四关按顺序完成时时间线记录四次真实结果', () => {
+    let progress = getDefaultProgress();
+    let demo = createEmptyDemo();
+    const levels = ['tactics', 'scouting', 'transfers', 'squad'] as const;
+    for (const levelId of levels) {
+      const outcome = applyLevelCompletion(progress, demo, levelId, WITH_CLUB, 'normal', NOW);
+      progress = outcome.progress;
+      demo = outcome.demo;
+    }
+    expect(progress.club.timeline.map((entry) => entry.levelId)).toEqual([...levels]);
+    expect(progress.club.timeline).toHaveLength(4);
+  });
+});
+
 describe('演示进度', () => {
   it('markDemoStep 去重且不修改原对象', () => {
     const demo = createEmptyDemo();

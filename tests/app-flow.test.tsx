@@ -68,17 +68,24 @@ describe('用户流程冒烟测试（足球经理题材）', () => {
 
     // finishArchive 会返回主页并写入正式进度。
     expect(screen.getByRole('heading', { level: 1 }).textContent).toContain('经理修理铺');
-    expect(screen.getByText(/已完成 1 \/ 4/)).toBeTruthy();
+    expect(screen.getAllByText(/已完成 1 \/ 4/).length).toBeGreaterThan(0);
     const raw = window.localStorage.getItem(PROGRESS_STORAGE_KEY);
     expect(raw).toBeTruthy();
     const parsed = JSON.parse(raw as string) as {
       completedLevels: string[];
       unlockedMechanisms: string[];
       levelStates: Record<string, unknown>;
+      club: { name: string; timeline: { levelId: string; headline: string }[] };
     };
     expect(parsed.completedLevels).toContain('tactics');
     expect(parsed.unlockedMechanisms).toContain('tactics-shapes');
     expect(parsed.levelStates.tactics).toBeUndefined();
+    // 俱乐部时间线写入真实战术板结果。
+    expect(parsed.club.timeline).toHaveLength(1);
+    expect(parsed.club.timeline[0].levelId).toBe('tactics');
+    expect(parsed.club.timeline[0].headline).toContain('战术板');
+    expect(screen.getByText('最近一份维修结果')).toBeTruthy();
+    expect(screen.getAllByText(/最近更新/).length).toBeGreaterThan(0);
 
     // 第二关已解锁。
     const startButtons = screen.getAllByRole('button', { name: '开始维修' });
@@ -127,7 +134,7 @@ describe('用户流程冒烟测试（足球经理题材）', () => {
       ['tactics-shapes', 'scout-network', 'transfer-negotiation'],
     );
     render(<App />);
-    expect(screen.getByText(/已完成 3 \/ 4/)).toBeTruthy();
+    expect(screen.getAllByText(/已完成 3 \/ 4/).length).toBeGreaterThan(0);
     expect(screen.queryAllByRole('button', { name: '完成上一关后解锁' })).toHaveLength(0);
     expect(screen.getByRole('button', { name: '开始维修' })).toBeTruthy();
   });
@@ -143,7 +150,7 @@ describe('用户流程冒烟测试（足球经理题材）', () => {
     expect(screen.getByRole('dialog', { name: '确定重置全部进度？' })).toBeTruthy();
     clickButton('确认重置');
     expect(screen.getByRole('heading', { level: 1 }).textContent).toContain('经理修理铺');
-    expect(screen.getByText(/已完成 0 \/ 4/)).toBeTruthy();
+    expect(screen.getAllByText(/已完成 0 \/ 4/).length).toBeGreaterThan(0);
 
     const raw = window.localStorage.getItem(PROGRESS_STORAGE_KEY);
     if (raw) {

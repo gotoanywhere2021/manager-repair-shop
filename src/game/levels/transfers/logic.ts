@@ -1,22 +1,24 @@
 /**
- * 关卡三《转会窗》的纯规则层。
+ * 关卡三《转会窗》的纯规则层（v2）。
  *
- * 这一层不依赖 React / DOM：
- * - 所有状态都可 JSON 序列化（phase / rng / eventLog / 预算 / 球员 / 模块 / evidence）；
- * - 所有状态变化都是纯函数，非法操作返回 ok: false 与中文原因，不修改原状态；
- * - 随机只用 shared 的 mulberry32（engine/rng.ts），相同种子 + 相同动作序列结果一致。
+ * v2 在原有「预算与工资空间 + 报价与谈判」之外加入两个有诱惑力但错误/有副作用的模块：
+ * - 「清空预算砸巨星」：预算上限砍到 30%，所有目标竞争兴趣 +30；
+ * - 「无限等待」：等待压价更多（20%），但每次等待额外 +25 竞争兴趣。
  *
- * 本关的学习系统是「转会谈判」：
- * 故障版里报价没有成本、预算无限，签谁都不构成选择；
- * 修复版把转会预算、周薪空间、报价档位、等待与竞争对手兴趣同时装上，
- * 让每一次报价都变成「现在锁定」与「再等一轮」之间的权衡。
+ * 验证前可以自由安装 / 卸载任意模块；未装齐正确模块或装错模块也能开始窗口，
+ * 但结果会真实变差（更少的钱、更高的兴趣、无效验证），并且归档会被逻辑阻止，
+ * 只能「回到维修台重新配置」后重新验证。
+ *
+ * 这一层不依赖 React / DOM，状态可 JSON 序列化；随机只用 engine/rng.ts。
  */
 
 import { createRng, isRngState, nextInt, reviveRng } from '../../engine/rng';
 import type { RngState } from '../../engine/rng';
-import { recordEvent } from '../../engine/events';
+import { buildComparisonRows, recordEvent } from '../../engine/events';
+import type { ComparisonRow } from '../../engine/events';
 import { createEvidence } from '../../engine/types';
 import type {
+  ClubUpdate,
   EventLogEntry,
   EventState,
   Evidence,
@@ -25,12 +27,13 @@ import type {
   QuizOption,
   ShowcaseOptions,
 } from '../../engine/types';
-import { buildComparisonRows } from '../../engine/events';
-import type { ComparisonRow } from '../../engine/events';
 
 /* ==========================================================================
    常量：所有数值都写在这里，测试与界面共用同一份来源。
    ========================================================================== */
+
+/** 存档结构版本；v2 增加了错误模块与验证尝试次数。 */
+export const TRANSFER_STATE_VERSION = 2;
 
 /** 转会预算：单位「万欧」，4500 万欧 = €45M。 */
 export const TRANSFER_BUDGET = 4500;
@@ -67,6 +70,15 @@ export const NORMAL_OFFER_MAX_INTEREST = 80;
 /** 等待后要价的最低值，避免把身价砍到不合理的数字。 */
 export const MIN_ASKING_PRICE = 200;
 
+/** 「清空预算砸巨星」错误模块：预算上限只剩 30%。 */
+export const GALAXY_BUDGET_RATIO = 0.3;
+/** 「清空预算砸巨星」错误模块：所有目标竞争兴趣 +30。 */
+export const GALAXY_INTEREST_PENALTY = 30;
+/** 「无限等待」副作用模块：每次等待额外增加的竞争兴趣。 */
+export const INFINITE_WAIT_EXTRA_INTEREST = 25;
+/** 「无限等待」副作用模块：等待时的要价下降比例。 */
+export const INFINITE_WAIT_PRICE_CUT = 0.2;
+
 /** 故障版候选只显示身价，不显示工资/佣金，也没有竞争。 */
 export interface PlayerSeed {
   id: string;
@@ -91,12 +103,56 @@ export const PLAYER_SEEDS: PlayerSeed[] = [
 
 export type TransferTier = 'low' | 'normal' | 'high';
 
-export type TransferModules = {
-  budget: boolean;
-  negotiation: boolean;
-};
+export type TransferModuleId = 'budget' | 'negotiation' | 'galaxy' | 'infiniteWait';
 
-export type TransferModuleId = keyof TransferModules;
+export type TransferModules = Record<TransferModuleId, boolean>;
+
+export const TRANSFER_MODULE_IDS: TransferModuleId[] = ['budget', 'negotiation', 'galaxy', 'infiniteWait'];
+
+export interface TransferModuleInfo {
+  id: TransferModuleId;
+  name: string;
+  englishName: string;
+  description: string;
+  sideEffect: string;
+  kind: 'correct' | 'risky';
+}
+
+/** 四张模块卡的完整信息；正确模块的名称与关卡定义一致，错误模块只在本关生效。 */
+export const TRANSFER_MODULE_POOL: TransferModuleInfo[] = [
+  {
+    id: 'budget',
+    name: '预算与工资空间',
+    englishName: 'Budget & Wages',
+    description: '转会预算与周薪空间分别记账，签约同时占用两者；超出任意一项都无法完成注册。',
+    sideEffect: '把预算全砸在一名球星上，可能连替补的工资空间都不剩。',
+    kind: 'correct',
+  },
+  {
+    id: 'negotiation',
+    name: '报价与谈判',
+    englishName: 'Negotiation',
+    description: '报价分档，等待可能压低价格，也可能引来竞争对手；窗口结束前必须完成目标。',
+    sideEffect: '一味等待会把「省钱」变成「错过」；过早砸钱则失去议价空间。',
+    kind: 'correct',
+  },
+  {
+    id: 'galaxy',
+    name: '清空预算砸巨星',
+    englishName: 'Galácticos',
+    description: '把几乎全部预算押在巨星身上：预算上限只剩 30%，但所有目标的竞争兴趣 +30。',
+    sideEffect: '预算 €45M → €13.5M，3 名目标兴趣 +30。看起来像豪赌，实际上很难完成 2 笔签约。',
+    kind: 'risky',
+  },
+  {
+    id: 'infiniteWait',
+    name: '无限等待',
+    englishName: 'Eternal Waiting',
+    description: '教练组可以无限期等待：等待时压价幅度更大，但每次等待额外 +25 竞争兴趣。',
+    sideEffect: '等待压价 20%（原 10%），但单次等待共 +45 兴趣，再加轮末 +10；很容易等到被截胡。',
+    kind: 'risky',
+  },
+];
 
 export interface TransferPlayer {
   id: string;
@@ -117,7 +173,7 @@ export interface TransferPlayer {
 }
 
 export interface TransfersState {
-  version: 1;
+  version: typeof TRANSFER_STATE_VERSION;
   phase: LevelPhase;
   mode: GameMode;
   fastPlay: boolean;
@@ -126,6 +182,8 @@ export interface TransfersState {
   eventLog: EventLogEntry[];
   evidence: Evidence;
   modules: TransferModules;
+  /** 第几次进入验证（重新配置后 +1，用于区分重试）。 */
+  verifyAttempt: number;
   /** 故障试玩里点「直接签下」的球员。 */
   faultSigned: string[];
   /** 是否已经结束故障试玩。 */
@@ -158,6 +216,29 @@ export interface OfferCheck {
   reason?: string;
   fee: number;
   totalCost: number;
+}
+
+export interface OfferPreview {
+  tier: TransferTier;
+  fee: number;
+  totalCost: number;
+  allowed: boolean;
+  blockedReason?: string;
+  expectedSuccess: boolean;
+  condition: string;
+  interestNow: number;
+  interestOnFail: number;
+  failureInterestGain: number;
+  budgetAfter: number | null;
+  wageAfter: number | null;
+  expectedText: string;
+}
+
+export interface WaitPreview {
+  interestGain: number;
+  priceCutRatio: number;
+  canCutPrice: boolean;
+  text: string;
 }
 
 export interface CreateTransfersOptions {
@@ -252,6 +333,21 @@ export function requiredSignings(state: TransfersState): number {
   return state.fastPlay ? TRANSFER_REQUIRED_SIGNINGS_FAST : TRANSFER_REQUIRED_SIGNINGS;
 }
 
+/** 当前模块配置下的转会预算上限；「砸巨星」模块会让它只剩 30%。 */
+export function budgetLimit(state: TransfersState): number {
+  return state.modules.galaxy ? Math.floor(TRANSFER_BUDGET * GALAXY_BUDGET_RATIO) : TRANSFER_BUDGET;
+}
+
+/** 当前模块配置下的周薪空间上限。 */
+export function wageLimit(_state: TransfersState): number {
+  return TRANSFER_WAGE_SPACE;
+}
+
+/** 正确模块是否都已安装：缺一个，本次验证就不算有效维修。 */
+export function verificationValid(state: TransfersState): boolean {
+  return state.modules.budget && state.modules.negotiation;
+}
+
 export function signedPlayers(state: TransfersState): TransferPlayer[] {
   return state.players.filter((player) => player.status === 'signed');
 }
@@ -272,8 +368,9 @@ export function tierName(tier: TransferTier): string {
   return '正常报价';
 }
 
-/** 某一档报价在当前要价下的费用（不含经纪人佣金）。 */
-export function tierFee(player: TransferPlayer, tier: TransferTier): number {
+/** 没有谈判模块时，报价退化为「按要价直接成交」，档位不再有区别。 */
+export function tierFee(state: TransfersState, player: TransferPlayer, tier: TransferTier): number {
+  if (!state.modules.negotiation) return player.askingPrice;
   if (tier === 'low') return Math.round(player.askingPrice * LOW_OFFER_RATIO);
   if (tier === 'high') return Math.round(player.askingPrice * HIGH_OFFER_RATIO);
   return player.askingPrice;
@@ -282,14 +379,11 @@ export function tierFee(player: TransferPlayer, tier: TransferTier): number {
 /** 这一档报价在当前状态下是否被允许，以及需要花多少钱。 */
 export function canOffer(state: TransfersState, playerId: string, tier: TransferTier): OfferCheck {
   const player = state.players.find((item) => item.id === playerId);
-  const fee = player ? tierFee(player, tier) : 0;
+  const fee = player ? tierFee(state, player, tier) : 0;
   const totalCost = player ? fee + player.agentFee : 0;
   if (state.phase !== 'verify') return { ok: false, reason: '现在不在转会窗口阶段。', fee, totalCost };
   if (!state.windowStarted) return { ok: false, reason: '转会窗口还没有开始。', fee, totalCost };
   if (state.windowClosed) return { ok: false, reason: '转会窗口已经关闭。', fee, totalCost };
-  if (!state.modules.budget || !state.modules.negotiation) {
-    return { ok: false, reason: '预算与谈判模块没有全部安装，报价规则未启用。', fee, totalCost };
-  }
   if (!player) return { ok: false, reason: '找不到这名候选。', fee, totalCost };
   if (player.status === 'signed') return { ok: false, reason: `${player.name} 已经签约。`, fee, totalCost };
   if (player.status === 'lost') return { ok: false, reason: `${player.name} 已经被竞争对手截胡。`, fee, totalCost };
@@ -297,23 +391,99 @@ export function canOffer(state: TransfersState, playerId: string, tier: Transfer
     return { ok: false, reason: '报价档位无效。', fee, totalCost };
   }
   if (state.round > roundLimit(state)) return { ok: false, reason: '转会窗口已经结束。', fee, totalCost };
-  if (totalCost > state.budget) {
-    return {
-      ok: false,
-      reason: `转会预算不足：这次签约需要 ${formatFee(totalCost)}（含佣金 ${formatFee(player.agentFee)}），剩余预算 ${formatFee(state.budget)}。`,
-      fee,
-      totalCost,
-    };
-  }
-  if (player.wage > state.wage) {
-    return {
-      ok: false,
-      reason: `工资空间不足：需要 ${formatWage(player.wage)}，剩余 ${formatWage(state.wage)}。`,
-      fee,
-      totalCost,
-    };
+  if (state.modules.budget) {
+    if (totalCost > state.budget) {
+      return {
+        ok: false,
+        reason: `转会预算不足：这次签约需要 ${formatFee(totalCost)}（含佣金 ${formatFee(player.agentFee)}），剩余预算 ${formatFee(state.budget)}。`,
+        fee,
+        totalCost,
+      };
+    }
+    if (player.wage > state.wage) {
+      return {
+        ok: false,
+        reason: `工资空间不足：需要 ${formatWage(player.wage)}，剩余 ${formatWage(state.wage)}。`,
+        fee,
+        totalCost,
+      };
+    }
   }
   return { ok: true, fee, totalCost };
+}
+
+/** 报价前的预计结果与风险，供界面直接展示，玩家不用读长规则。 */
+export function previewOffer(state: TransfersState, playerId: string, tier: TransferTier): OfferPreview | null {
+  const player = state.players.find((item) => item.id === playerId);
+  if (!player) return null;
+  const check = canOffer(state, playerId, tier);
+  const negotiationOn = state.modules.negotiation;
+  const expectedSuccess =
+    !negotiationOn || tier === 'high'
+      ? true
+      : tier === 'low'
+        ? player.rivalInterest < LOW_OFFER_MAX_INTEREST
+        : player.rivalInterest < NORMAL_OFFER_MAX_INTEREST;
+  const failureInterestGain = tier === 'low' ? RIVAL_LOW_OFFER : tier === 'normal' ? 15 : RIVAL_HIGH_OFFER;
+  const interestOnFail = Math.min(RIVAL_HIJACK_AT, player.rivalInterest + failureInterestGain);
+  const budgetAfter = state.modules.budget ? state.budget - check.totalCost : null;
+  const wageAfter = state.modules.budget ? state.wage - player.wage : null;
+  const condition = !negotiationOn
+    ? '报价与谈判未启用：报价直接成交，没有竞争。'
+    : tier === 'high'
+      ? `高价报价保证成交；对手兴趣 +${RIVAL_HIGH_OFFER}。`
+      : tier === 'low'
+        ? `低价成交条件：竞争对手兴趣 < ${LOW_OFFER_MAX_INTEREST}（当前 ${player.rivalInterest}）。`
+        : `正常成交条件：竞争对手兴趣 < ${NORMAL_OFFER_MAX_INTEREST}（当前 ${player.rivalInterest}）。`;
+  const expectedText = !expectedSuccess
+    ? `预计会被拒绝；失败后兴趣 ${player.rivalInterest} → ${interestOnFail}（轮末未签约再 +${RIVAL_ROUND_DRIFT}）。`
+    : tier === 'high'
+      ? '预计成交：保证签约，但多付 10% 转会费。'
+      : !negotiationOn
+        ? '预计成交：没有竞争，直接按要价签约。'
+        : `预计成交；对手兴趣会上升到 ${Math.min(RIVAL_HIJACK_AT, player.rivalInterest + failureInterestGain)}（如果还有下一轮）。`;
+  return {
+    tier,
+    fee: check.fee,
+    totalCost: check.totalCost,
+    allowed: check.ok,
+    blockedReason: check.reason,
+    expectedSuccess,
+    condition,
+    interestNow: player.rivalInterest,
+    interestOnFail,
+    failureInterestGain,
+    budgetAfter,
+    wageAfter,
+    expectedText,
+  };
+}
+
+/** 等待前的预计效果。 */
+export function previewWait(state: TransfersState): WaitPreview {
+  const negotiationOn = state.modules.negotiation;
+  const interestGain = !negotiationOn ? 0 : RIVAL_WAIT + (state.modules.infiniteWait ? INFINITE_WAIT_EXTRA_INTEREST : 0);
+  const priceCutRatio = !negotiationOn ? 0 : state.modules.infiniteWait ? INFINITE_WAIT_PRICE_CUT : WAIT_PRICE_CUT;
+  const canCutPrice = negotiationOn && state.round < roundLimit(state);
+  return {
+    interestGain,
+    priceCutRatio,
+    canCutPrice,
+    text: !negotiationOn
+      ? '报价与谈判未启用：等待不会压低要价，也不会改变竞争兴趣。'
+      : `等待：要价 ${canCutPrice ? `-${Math.round(priceCutRatio * 100)}%` : '不再下降'}，竞争对手兴趣 +${interestGain}，轮末未签约目标再 +${RIVAL_ROUND_DRIFT}。`,
+  };
+}
+
+export function waitInterestGain(state: TransfersState): number {
+  return state.modules.negotiation
+    ? RIVAL_WAIT + (state.modules.infiniteWait ? INFINITE_WAIT_EXTRA_INTEREST : 0)
+    : 0;
+}
+
+export function waitPriceCutRatio(state: TransfersState): number {
+  if (!state.modules.negotiation) return 0;
+  return state.modules.infiniteWait ? INFINITE_WAIT_PRICE_CUT : WAIT_PRICE_CUT;
 }
 
 function snapshot(state: TransfersState, extra: EventState = {}): EventState {
@@ -322,6 +492,7 @@ function snapshot(state: TransfersState, extra: EventState = {}): EventState {
     budget: state.budget,
     wage: state.wage,
     signed: signedCount(state),
+    attempt: state.verifyAttempt,
     ...extra,
   };
 }
@@ -330,7 +501,7 @@ function log(state: TransfersState, input: Parameters<typeof recordEvent>[1]): T
   return { ...state, eventLog: recordEvent(state.eventLog, input) };
 }
 
-function createPlayers(rng: RngState): { players: TransferPlayer[]; rng: RngState } {
+function createPlayers(rng: RngState, galaxyPenalty = false): { players: TransferPlayer[]; rng: RngState } {
   let current = rng;
   const players = PLAYER_SEEDS.map((seed) => {
     const draw = nextInt(current, 10);
@@ -343,13 +514,18 @@ function createPlayers(rng: RngState): { players: TransferPlayer[]; rng: RngStat
       askingPrice: seed.valuation,
       wage: seed.wage,
       agentFee: seed.agentFee,
-      rivalInterest: seed.baseInterest + draw.value,
+      rivalInterest: seed.baseInterest + draw.value + (galaxyPenalty ? GALAXY_INTEREST_PENALTY : 0),
       status: 'available' as const,
       signedRound: null,
       lostRound: null,
     };
   });
   return { players, rng: current };
+}
+
+function moduleNames(state: TransfersState): string {
+  const on = TRANSFER_MODULE_POOL.filter((module) => state.modules[module.id]).map((module) => module.name);
+  return on.length > 0 ? on.join(' + ') : '未安装任何模块';
 }
 
 /* ==========================================================================
@@ -360,7 +536,7 @@ export function createTransfersState(options: CreateTransfersOptions): Transfers
   const summon = createPlayers(createRng(options.seed));
   const showcase = options.showcaseOptions;
   let phase: LevelPhase = options.fastStart ? 'faultPlay' : 'commission';
-  let modules: TransferModules = { budget: false, negotiation: false };
+  let modules: TransferModules = { budget: false, negotiation: false, galaxy: false, infiniteWait: false };
   let windowStarted = false;
 
   if (showcase) {
@@ -370,7 +546,7 @@ export function createTransfersState(options: CreateTransfersOptions): Transfers
       phase = 'repair';
     } else if (showcase.startPhase === 'verify') {
       phase = 'verify';
-      modules = { budget: true, negotiation: true };
+      modules = { budget: true, negotiation: true, galaxy: false, infiniteWait: false };
       windowStarted = true;
     } else {
       phase = 'commission';
@@ -378,7 +554,7 @@ export function createTransfersState(options: CreateTransfersOptions): Transfers
   }
 
   return {
-    version: 1,
+    version: TRANSFER_STATE_VERSION,
     phase,
     mode: options.mode,
     fastPlay: showcase?.fastPlay ?? false,
@@ -387,6 +563,7 @@ export function createTransfersState(options: CreateTransfersOptions): Transfers
     eventLog: [],
     evidence: createEvidence(),
     modules,
+    verifyAttempt: 1,
     faultSigned: [],
     faultFinished: false,
     diagnoseResolved: false,
@@ -394,7 +571,7 @@ export function createTransfersState(options: CreateTransfersOptions): Transfers
     windowStarted,
     windowClosed: false,
     actionsTaken: 0,
-    budget: TRANSFER_BUDGET,
+    budget: modules.galaxy ? Math.floor(TRANSFER_BUDGET * GALAXY_BUDGET_RATIO) : TRANSFER_BUDGET,
     wage: TRANSFER_WAGE_SPACE,
     players: summon.players,
     transferResolved: false,
@@ -404,16 +581,11 @@ export function createTransfersState(options: CreateTransfersOptions): Transfers
 
 /** 供展示模式 / 测试直接拿到窗口内的状态。 */
 export function readyWindowState(seed: number, fastPlay = false): TransfersState {
-  const initial = createTransfersState({
-    mode: 'normal',
-    seed,
-    fastStart: true,
-    showcaseOptions: null,
-  });
+  const initial = createTransfersState({ mode: 'normal', seed, fastStart: true, showcaseOptions: null });
   return {
     ...initial,
     phase: 'verify',
-    modules: { budget: true, negotiation: true },
+    modules: { budget: true, negotiation: true, galaxy: false, infiniteWait: false },
     faultSigned: ['jiang-ye'],
     faultFinished: true,
     diagnoseResolved: true,
@@ -501,7 +673,7 @@ export function resolveDiagnosis(state: TransfersState): TransferActionResult {
       label: '诊断正确：报价缺少预算、工资与竞争代价',
       before: { phase: 'diagnose' },
       after: { phase: 'repair' },
-      note: '接下来安装「预算与工资空间」与「报价与谈判」两个模块。',
+      note: '接下来从模块池里选择要安装的规则；装错模块也能开始验证，但结果会变差。',
     },
   );
   return { state: next, ok: true };
@@ -509,18 +681,19 @@ export function resolveDiagnosis(state: TransfersState): TransferActionResult {
 
 export function setModule(state: TransfersState, moduleId: TransferModuleId, installed: boolean): TransferActionResult {
   if (state.phase !== 'repair') return { state, ok: false, reason: '只有在维修阶段可以安装模块。' };
-  if (state.windowStarted) return { state, ok: false, reason: '转会窗口已经开始，模块已锁定。' };
-  if (moduleId !== 'budget' && moduleId !== 'negotiation') return { state, ok: false, reason: '未知模块。' };
-  const label = moduleId === 'budget' ? '预算与工资空间' : '报价与谈判';
+  if (state.windowStarted) return { state, ok: false, reason: '转会窗口已经开始，模块已锁定；修改需要回到维修台重新配置。' };
+  if (!TRANSFER_MODULE_IDS.includes(moduleId)) return { state, ok: false, reason: '未知模块。' };
+  const info = TRANSFER_MODULE_POOL.find((module) => module.id === moduleId);
+  const label = info?.name ?? moduleId;
   const next = log(
     { ...state, modules: { ...state.modules, [moduleId]: installed } },
     {
       phase: 'repair',
       action: 'module',
       label: `${installed ? '安装' : '卸载'}模块：${label}`,
-      before: { modules: state.modules.budget ? 'budget+negotiation' : 'partial' },
-      after: { modules: installed ? 'installed' : 'uninstalled' },
-      note: installed ? '规则已启用。' : '规则已退化，相关代价不再生效。',
+      before: { modules: moduleNames(state) },
+      after: { modules: moduleNames({ ...state, modules: { ...state.modules, [moduleId]: installed } }) },
+      note: installed ? (info?.sideEffect ?? '规则已启用。') : '规则已退化，相关代价不再生效。',
     },
   );
   return { state: next, ok: true };
@@ -529,18 +702,35 @@ export function setModule(state: TransfersState, moduleId: TransferModuleId, ins
 export function startWindow(state: TransfersState): TransferActionResult {
   if (state.phase !== 'repair') return { state, ok: false, reason: '现在不在维修阶段。' };
   if (state.windowStarted) return { state, ok: false, reason: '转会窗口已经开始。' };
-  if (!state.modules.budget || !state.modules.negotiation) {
-    return { state, ok: false, reason: '需要同时安装「预算与工资空间」和「报价与谈判」才能开始窗口。' };
+  let players = state.players;
+  if (state.modules.galaxy) {
+    players = players.map((player) =>
+      player.status === 'available'
+        ? { ...player, rivalInterest: Math.min(RIVAL_HIJACK_AT, player.rivalInterest + GALAXY_INTEREST_PENALTY) }
+        : player,
+    );
   }
   const next = log(
-    { ...state, phase: 'verify', windowStarted: true, round: 1, windowClosed: false, actionsTaken: 0 },
+    {
+      ...state,
+      phase: 'verify',
+      windowStarted: true,
+      round: 1,
+      windowClosed: false,
+      actionsTaken: 0,
+      budget: budgetLimit(state),
+      wage: TRANSFER_WAGE_SPACE,
+      players,
+    },
     {
       phase: 'verify',
       action: 'window-open',
-      label: `开始 ${roundLimit(state)} 轮转会窗口`,
-      before: { round: 0, budget: state.budget, wage: state.wage },
-      after: { round: 1, budget: state.budget, wage: state.wage },
-      note: `每轮只能对 1 名目标报价或等待；至少签下 ${requiredSignings(state)} 人。`,
+      label: `开始 ${roundLimit(state)} 轮转会窗口（${moduleNames(state)}）`,
+      before: { round: 0, budget: budgetLimit(state), wage: TRANSFER_WAGE_SPACE },
+      after: { round: 1, budget: budgetLimit(state), wage: TRANSFER_WAGE_SPACE },
+      note: verificationValid(state)
+        ? `每轮只能对 1 名目标报价或等待；至少签下 ${requiredSignings(state)} 人。`
+        : '正确模块没有装齐：本次验证会记录真实结果，但归档会被阻止。',
     },
   );
   return { state: next, ok: true };
@@ -554,7 +744,6 @@ export function canWaitTarget(state: TransfersState, playerId: string): { ok: bo
   if (state.phase !== 'verify') return { ok: false, reason: '现在不在转会窗口阶段。' };
   if (!state.windowStarted) return { ok: false, reason: '转会窗口还没有开始。' };
   if (state.windowClosed) return { ok: false, reason: '转会窗口已经关闭。' };
-  if (!state.modules.negotiation) return { ok: false, reason: '报价与谈判模块未安装，等待规则未启用。' };
   const player = state.players.find((item) => item.id === playerId);
   if (!player) return { ok: false, reason: '找不到这名候选。' };
   if (player.status === 'signed') return { ok: false, reason: `${player.name} 已经签约。` };
@@ -567,34 +756,36 @@ function endRound(state: TransfersState): TransfersState {
   let next = state;
   const nextRound = state.round + 1;
 
-  next.players.forEach((player) => {
-    if (player.status !== 'available') return;
-    const beforeInterest = player.rivalInterest;
-    const interest = beforeInterest + RIVAL_ROUND_DRIFT;
-    if (interest >= RIVAL_HIJACK_AT) {
-      next = {
-        ...next,
-        players: next.players.map((item) =>
-          item.id === player.id ? { ...item, rivalInterest: RIVAL_HIJACK_AT, status: 'lost', lostRound: nextRound } : item,
-        ),
-      };
-      next = log(next, {
-        phase: 'verify',
-        action: 'hijack',
-        label: `${player.name} 被竞争对手截胡（兴趣 ${beforeInterest} → ${RIVAL_HIJACK_AT}）`,
-        before: { interest: beforeInterest },
-        after: { interest: RIVAL_HIJACK_AT },
-        note: `第 ${nextRound} 轮结束时兴趣达到 ${RIVAL_HIJACK_AT}，这名目标永久失去。`,
-      });
-    } else {
-      next = {
-        ...next,
-        players: next.players.map((item) =>
-          item.id === player.id ? { ...item, rivalInterest: interest } : item,
-        ),
-      };
-    }
-  });
+  if (state.modules.negotiation) {
+    next.players.forEach((player) => {
+      if (player.status !== 'available') return;
+      const beforeInterest = player.rivalInterest;
+      const interest = beforeInterest + RIVAL_ROUND_DRIFT;
+      if (interest >= RIVAL_HIJACK_AT) {
+        next = {
+          ...next,
+          players: next.players.map((item) =>
+            item.id === player.id ? { ...item, rivalInterest: RIVAL_HIJACK_AT, status: 'lost', lostRound: nextRound } : item,
+          ),
+        };
+        next = log(next, {
+          phase: 'verify',
+          action: 'hijack',
+          label: `${player.name} 被竞争对手截胡（兴趣 ${beforeInterest} → ${RIVAL_HIJACK_AT}）`,
+          before: { interest: beforeInterest },
+          after: { interest: RIVAL_HIJACK_AT },
+          note: `第 ${nextRound} 轮结束时兴趣达到 ${RIVAL_HIJACK_AT}，这名目标永久失去。`,
+        });
+      } else {
+        next = {
+          ...next,
+          players: next.players.map((item) =>
+            item.id === player.id ? { ...item, rivalInterest: interest } : item,
+          ),
+        };
+      }
+    });
+  }
 
   const round = nextRound;
   const limit = roundLimit(state);
@@ -603,7 +794,10 @@ function endRound(state: TransfersState): TransfersState {
     ...next,
     round: Math.min(round, limit + 1),
     windowClosed: closed,
-    evidence: closed && state.actionsTaken >= 1 ? { ...state.evidence, operatedMechanic: true } : next.evidence,
+    evidence:
+      closed && state.actionsTaken >= 1 && verificationValid(state)
+        ? { ...state.evidence, operatedMechanic: true }
+        : next.evidence,
   };
 
   if (closed) {
@@ -613,7 +807,9 @@ function endRound(state: TransfersState): TransfersState {
       label: `转会窗口关闭：已签下 ${signedCount(next)} / ${requiredSignings(next)} 人`,
       before: { round: limit, budget: next.budget, wage: next.wage },
       after: { round: next.round, budget: next.budget, wage: next.wage, signed: signedCount(next) },
-      note: `剩余预算 ${formatFee(next.budget)}，剩余工资空间 ${formatWage(next.wage)}。`,
+      note: verificationValid(next)
+        ? `剩余预算 ${formatFee(next.budget)}，剩余工资空间 ${formatWage(next.wage)}。`
+        : '正确模块未装齐，本次验证不算有效维修。',
     });
   }
   return next;
@@ -626,13 +822,14 @@ function applyOffer(state: TransfersState, playerId: string, tier: TransferTier)
   if (!player) return { state, ok: false, reason: '找不到这名候选。' };
 
   const beforeInterest = player.rivalInterest;
+  const negotiationOn = state.modules.negotiation;
   const success =
-    tier === 'high'
+    !negotiationOn || tier === 'high'
       ? true
       : tier === 'low'
         ? beforeInterest < LOW_OFFER_MAX_INTEREST
         : beforeInterest < NORMAL_OFFER_MAX_INTEREST;
-  const interestGain = tier === 'low' ? RIVAL_LOW_OFFER : tier === 'high' ? RIVAL_HIGH_OFFER : 15;
+  const interestGain = !negotiationOn ? 0 : tier === 'low' ? RIVAL_LOW_OFFER : tier === 'high' ? RIVAL_HIGH_OFFER : 15;
   const afterInterest = Math.min(RIVAL_HIJACK_AT, beforeInterest + interestGain);
 
   const players = state.players.map((item) => {
@@ -643,8 +840,9 @@ function applyOffer(state: TransfersState, playerId: string, tier: TransferTier)
     return { ...item, rivalInterest: afterInterest };
   });
 
-  const nextBudget = success ? state.budget - check.totalCost : state.budget;
-  const nextWage = success ? state.wage - player.wage : state.wage;
+  const deduct = state.modules.budget;
+  const nextBudget = deduct ? state.budget - check.totalCost : state.budget;
+  const nextWage = deduct ? state.wage - player.wage : state.wage;
   const signedNow = signedCount({ ...state, players });
 
   let next: TransfersState = {
@@ -655,8 +853,9 @@ function applyOffer(state: TransfersState, playerId: string, tier: TransferTier)
     actionsTaken: state.actionsTaken + 1,
   };
 
-  const failReason =
-    tier === 'low'
+  const failReason = !negotiationOn
+    ? '报价与谈判未启用：报价直接成交，没有竞争。'
+    : tier === 'low'
       ? `竞争对手兴趣 ${beforeInterest} ≥ ${LOW_OFFER_MAX_INTEREST}，低价报价被拒绝。`
       : tier === 'normal'
         ? `竞争对手兴趣 ${beforeInterest} ≥ ${NORMAL_OFFER_MAX_INTEREST}，正常报价被拒绝。`
@@ -677,14 +876,18 @@ function applyOffer(state: TransfersState, playerId: string, tier: TransferTier)
       interest: success ? beforeInterest : afterInterest,
     },
     delta: success
-      ? `-${formatFee(check.totalCost)} / -${formatWage(player.wage)}`
+      ? deduct
+        ? `-${formatFee(check.totalCost)} / -${formatWage(player.wage)}`
+        : '预算规则未启用：本次签约不扣预算（验证无效）'
       : `兴趣 +${interestGain}`,
     note: success
-      ? tier === 'low'
-        ? `低价报价按要价九折成交，但竞争对手兴趣也上升到 ${afterInterest}（如果还有下一轮）。`
-        : tier === 'high'
-          ? '高价报价保证成交，但多付了 10% 的转会费。'
-          : '正常报价按当前要价成交。'
+      ? !negotiationOn
+        ? '报价与谈判未启用：这次签约没有档位、竞争与议价，本次验证不算有效维修。'
+        : tier === 'low'
+          ? `低价报价按要价九折成交，但竞争对手兴趣也上升到 ${afterInterest}（如果还有下一轮）。`
+          : tier === 'high'
+            ? '高价报价保证成交，但多付了 10% 的转会费。'
+            : '正常报价按当前要价成交。'
       : failReason,
   });
 
@@ -692,9 +895,7 @@ function applyOffer(state: TransfersState, playerId: string, tier: TransferTier)
 }
 
 export function offer(state: TransfersState, playerId: string, tier: TransferTier): TransferActionResult {
-  const result = applyOffer(state, playerId, tier);
-  if (!result.ok) return result;
-  return { state: result.state, ok: true };
+  return applyOffer(state, playerId, tier);
 }
 
 /** 兼容更直白的调用名。 */
@@ -707,11 +908,14 @@ export function waitTarget(state: TransfersState, playerId: string): TransferAct
   if (!player) return { state, ok: false, reason: '找不到这名候选。' };
 
   const beforeInterest = player.rivalInterest;
-  const canCut = state.round < roundLimit(state);
+  const negotiationOn = state.modules.negotiation;
+  const gain = waitInterestGain(state);
+  const cutRatio = waitPriceCutRatio(state);
+  const canCut = negotiationOn && state.round < roundLimit(state);
   const nextAsking = canCut
-    ? Math.max(MIN_ASKING_PRICE, Math.round(player.askingPrice * (1 - WAIT_PRICE_CUT)))
+    ? Math.max(MIN_ASKING_PRICE, Math.round(player.askingPrice * (1 - cutRatio)))
     : player.askingPrice;
-  const afterInterest = Math.min(RIVAL_HIJACK_AT, beforeInterest + RIVAL_WAIT);
+  const afterInterest = Math.min(RIVAL_HIJACK_AT, beforeInterest + gain);
 
   let next: TransfersState = {
     ...state,
@@ -736,10 +940,12 @@ export function waitTarget(state: TransfersState, playerId: string): TransferAct
       interest: afterInterest,
       asking: nextAsking,
     },
-    delta: `兴趣 +${afterInterest - beforeInterest}`,
-    note: canCut
-      ? `等待让要价下降 10%，但竞争对手兴趣 +${RIVAL_WAIT}；本目标的兴趣会在轮末继续 +${RIVAL_ROUND_DRIFT}。`
-      : '这是最后一轮，等待不会让要价再下降，窗口即将关闭。',
+    delta: negotiationOn ? `兴趣 +${gain}` : '等待无效果（谈判模块未启用）',
+    note: !negotiationOn
+      ? '报价与谈判未启用：等待不会压价，也不会改变竞争兴趣。'
+      : canCut
+        ? `等待让要价下降 ${Math.round(cutRatio * 100)}%，但竞争对手兴趣 +${gain}；轮末未签约目标继续 +${RIVAL_ROUND_DRIFT}。`
+        : '这是最后一轮，等待不会让要价再下降，窗口即将关闭。',
   });
 
   return { state: endRound(next), ok: true };
@@ -753,7 +959,10 @@ export function closeWindow(state: TransfersState): TransferActionResult {
     {
       ...state,
       windowClosed: true,
-      evidence: state.actionsTaken >= 1 ? { ...state.evidence, operatedMechanic: true } : state.evidence,
+      evidence:
+        state.actionsTaken >= 1 && verificationValid(state)
+          ? { ...state.evidence, operatedMechanic: true }
+          : state.evidence,
     },
     {
       phase: 'verify',
@@ -761,7 +970,45 @@ export function closeWindow(state: TransfersState): TransferActionResult {
       label: `手动关闭转会窗口：已签下 ${signedCount(state)} 人`,
       before: { round: state.round, budget: state.budget, wage: state.wage },
       after: { budget: state.budget, wage: state.wage, signed: signedCount(state) },
-      note: `剩余预算 ${formatFee(state.budget)}，剩余工资空间 ${formatWage(state.wage)}。`,
+      note: verificationValid(state)
+        ? `剩余预算 ${formatFee(state.budget)}，剩余工资空间 ${formatWage(state.wage)}。`
+        : '正确模块未装齐，本次验证不算有效维修。',
+    },
+  );
+  return { state: next, ok: true };
+}
+
+/** 「回到维修台重新配置」：清空本次验证成绩，保留故障 / 诊断 / 微教学证据。 */
+export function reconfigure(state: TransfersState): TransferActionResult {
+  if (state.phase !== 'verify') return { state, ok: false, reason: '只有在验证阶段可以回到维修台重新配置。' };
+  if (!state.windowClosed) return { state, ok: false, reason: '先结束本次转会窗口，再回到维修台重新配置。' };
+  const rolled = createPlayers(state.rng);
+  const keptLog = state.eventLog.filter((entry) => entry.phase !== 'verify');
+  const next = log(
+    {
+      ...state,
+      phase: 'repair',
+      players: rolled.players,
+      rng: rolled.rng,
+      budget: TRANSFER_BUDGET,
+      wage: TRANSFER_WAGE_SPACE,
+      round: 1,
+      windowStarted: false,
+      windowClosed: false,
+      actionsTaken: 0,
+      transferResolved: false,
+      transferSkipped: false,
+      verifyAttempt: state.verifyAttempt + 1,
+      eventLog: keptLog,
+      evidence: { ...state.evidence, operatedMechanic: false, transferred: false },
+    },
+    {
+      phase: 'repair',
+      action: 'reconfigure',
+      label: `回到维修台重新配置（第 ${state.verifyAttempt + 1} 次验证）`,
+      before: { attempt: state.verifyAttempt, signed: signedCount(state) },
+      after: { attempt: state.verifyAttempt + 1, phase: 'repair' },
+      note: '本轮验证成绩已清空；故障试玩、诊断与模块选择证据保留，可以换模块后重新验证。',
     },
   );
   return { state: next, ok: true };
@@ -770,13 +1017,13 @@ export function closeWindow(state: TransfersState): TransferActionResult {
 export function reopenWindow(state: TransfersState): TransferActionResult {
   if (state.phase !== 'verify') return { state, ok: false, reason: '现在不在转会窗口阶段。' };
   if (!state.windowClosed) return { state, ok: false, reason: '转会窗口还没有关闭，不需要重开。' };
-  const reset = createPlayers(state.rng);
+  const rolled = createPlayers(state.rng, state.modules.galaxy);
   const next = log(
     {
       ...state,
-      players: reset.players,
-      rng: reset.rng,
-      budget: TRANSFER_BUDGET,
+      players: rolled.players,
+      rng: rolled.rng,
+      budget: budgetLimit(state),
       wage: TRANSFER_WAGE_SPACE,
       round: 1,
       windowClosed: false,
@@ -789,7 +1036,7 @@ export function reopenWindow(state: TransfersState): TransferActionResult {
       action: 'window-reopen',
       label: '重开转会窗口：预算与工资空间恢复，球员回到初始状态',
       before: { signed: signedCount(state), budget: state.budget },
-      after: { signed: 0, budget: TRANSFER_BUDGET },
+      after: { signed: 0, budget: budgetLimit(state) },
       note: '已安装的模块保留；本次窗口的真实报价记录仍保留在操作记录里。',
     },
   );
@@ -800,14 +1047,36 @@ export function reopenWindow(state: TransfersState): TransferActionResult {
    阶段推进与结算
    ========================================================================== */
 
+/** 还不能归档的具体原因；空数组表示可以进入迁移题。 */
+export function archiveProblems(state: TransfersState): string[] {
+  const problems: string[] = [];
+  if (!state.windowStarted) problems.push('转会窗口还没有开始。');
+  if (!state.windowClosed) problems.push('转会窗口还没有关闭，先结束本次窗口。');
+  if (signedCount(state) < requiredSignings(state)) {
+    problems.push(`签约人数不足：只签下 ${signedCount(state)} / ${requiredSignings(state)} 人。`);
+  }
+  if (!state.modules.budget) problems.push('缺少「预算与工资空间」模块：本次报价没有预算与工资约束，验证无效。');
+  if (!state.modules.negotiation) problems.push('缺少「报价与谈判」模块：本次报价没有竞争与议价，验证无效。');
+  return problems;
+}
+
+export function archiveBlockedReason(state: TransfersState): string | null {
+  const problems = archiveProblems(state);
+  return problems.length > 0 ? problems[0] : null;
+}
+
+/** 是否可以离开验证阶段进入迁移题：目标达成 + 正确模块齐备。 */
+export function canAdvanceToTransfer(state: TransfersState): boolean {
+  return state.windowClosed && isGoalMet(state) && verificationValid(state);
+}
+
 export function advanceToTransfer(state: TransfersState): TransferActionResult {
   if (state.phase !== 'verify') return { state, ok: false, reason: '现在不在验证阶段。' };
-  if (!state.windowClosed) return { state, ok: false, reason: '窗口还没有关闭，不能进入迁移阶段。' };
-  if (!isGoalMet(state)) {
+  if (!canAdvanceToTransfer(state)) {
     return {
       state,
       ok: false,
-      reason: `还需要至少签下 ${requiredSignings(state)} 人（当前 ${signedCount(state)} 人）。可以重开窗口再试一次。`,
+      reason: `还不能归档：${archiveProblems(state).join('；')}`,
     };
   }
   const next = log(
@@ -815,8 +1084,8 @@ export function advanceToTransfer(state: TransfersState): TransferActionResult {
     {
       phase: 'transfer',
       action: 'to-transfer',
-      label: `进入迁移题：本次签下 ${signedCount(state)} 人`,
-      before: { signed: signedCount(state) },
+      label: `进入迁移题：本次签下 ${signedCount(state)} 人（第 ${state.verifyAttempt} 次验证）`,
+      before: { signed: signedCount(state), attempt: state.verifyAttempt },
       after: { phase: 'transfer' },
       note: '迁移题只检验判断，不计分。',
     },
@@ -887,6 +1156,7 @@ export function missedTargets(state: TransfersState): MissedTarget[] {
       }
       const failed = state.eventLog.filter(
         (entry) =>
+          entry.phase === 'verify' &&
           (entry.action === 'offer-low' || entry.action === 'offer-normal' || entry.action === 'offer-high') &&
           typeof entry.label === 'string' &&
           entry.label.includes(player.name) &&
@@ -906,12 +1176,22 @@ export function missedTargets(state: TransfersState): MissedTarget[] {
 export function transfersComparison(state: TransfersState): ComparisonRow[] {
   const faultLabels = state.eventLog.filter((entry) => entry.action === 'fault-sign').length;
   const offerActions = state.eventLog.filter(
-    (entry) => entry.action === 'offer-low' || entry.action === 'offer-normal' || entry.action === 'offer-high',
+    (entry) =>
+      entry.phase === 'verify' &&
+      (entry.action === 'offer-low' || entry.action === 'offer-normal' || entry.action === 'offer-high'),
   ).length;
-  const waitActions = state.eventLog.filter((entry) => entry.action === 'wait').length;
+  const waitActions = state.eventLog.filter((entry) => entry.phase === 'verify' && entry.action === 'wait').length;
   return buildComparisonRows([
-    { label: '转会预算', fault: '不存在，想签就签', fixed: `${formatFee(TRANSFER_BUDGET)}，本次剩余 ${formatFee(state.budget)}` },
-    { label: '工资空间', fault: '不存在', fixed: `${formatWage(TRANSFER_WAGE_SPACE)}，本次剩余 ${formatWage(state.wage)}` },
+    {
+      label: '转会预算',
+      fault: '不存在，想签就签',
+      fixed: `${formatFee(budgetLimit(state))}，本次剩余 ${formatFee(state.budget)}`,
+    },
+    {
+      label: '工资空间',
+      fault: '不存在',
+      fixed: `${formatWage(wageLimit(state))}，本次剩余 ${formatWage(state.wage)}`,
+    },
     { label: '竞争对手', fault: '不存在', fixed: `兴趣 0~${RIVAL_HIJACK_AT}，达到 ${RIVAL_HIJACK_AT} 即被截胡` },
     {
       label: '本次操作',
@@ -932,11 +1212,37 @@ export function transferSummaryLines(state: TransfersState): string[] {
   const signature = signed
     .map((player) => `${player.name}（第 ${player.signedRound ?? '?'} 轮签约，周薪 ${formatWage(player.wage)}）`)
     .join('、');
+  const spend = Math.max(0, budgetLimit(state) - state.budget);
   return [
-    `规则变化：装上转会预算（${formatFee(TRANSFER_BUDGET)}）与周薪空间（${formatWage(TRANSFER_WAGE_SPACE)}）后，转会费和经纪人佣金同时占预算，周薪同时占工资空间；3 轮窗口里，低价 / 正常 / 高价三档报价、等待与竞争对手兴趣共同决定结果。`,
-    `决策变化：本次真实记录是报价/等待动作 ${state.actionsTaken} 次，最终签下 ${signed.length} 人${signature ? `（${signature}）` : ''}；每次报价都要在「现在锁定」和「再等一轮争取更低价」之间选择。`,
+    `规则变化：装上转会预算（${formatFee(budgetLimit(state))}）与周薪空间（${formatWage(TRANSFER_WAGE_SPACE)}）后，转会费和经纪人佣金同时占预算，周薪同时占工资空间；3 轮窗口里，低价 / 正常 / 高价三档报价、等待与竞争对手兴趣共同决定结果。`,
+    `决策变化：第 ${state.verifyAttempt} 次验证共报价/等待 ${state.actionsTaken} 次，花费 ${formatFee(spend)}，签下 ${signed.length} 人${signature ? `（${signature}）` : ''}；每次报价都要在「现在锁定」和「再等一轮争取更低价」之间选择。`,
     `代价：等待会抬高竞争对手兴趣并可能被截胡，高价保证成交却多付 10%，低价可能被拒绝，预算或工资超限的签约直接被拒绝——窗口关闭时，「没签成」也是真实结果。`,
   ];
+}
+
+/** 俱乐部时间线：只写真实签约、花费、工资与错过原因。 */
+export function buildTransfersClubUpdate(state: TransfersState): ClubUpdate {
+  const signed = signedPlayers(state);
+  const spend = Math.max(0, budgetLimit(state) - state.budget);
+  const wageAdded = Math.max(0, TRANSFER_WAGE_SPACE - state.wage);
+  const missed = missedTargets(state);
+  const details = [
+    `转会窗：第 ${state.verifyAttempt} 次验证报价/等待 ${state.actionsTaken} 次，签下 ${signed.length} 人${
+      signed.length > 0
+        ? `（${signed.map((player) => `${player.name} 第 ${player.signedRound ?? '?'} 轮`).join('、')}）`
+        : ''
+    }。`,
+    `预算：花费 ${formatFee(spend)} / 上限 ${formatFee(budgetLimit(state))}；新增周薪 ${formatWage(wageAdded)} / 上限 ${formatWage(TRANSFER_WAGE_SPACE)}。`,
+    missed.length > 0
+      ? `错过：${missed.map((item) => `${item.name}（${item.reason}）`).join('；')}`
+      : '错过：没有目标在窗口里流失。',
+    `模块：${moduleNames(state)}${verificationValid(state) ? '（验证有效）' : '（验证无效，正确模块未装齐）'}。`,
+  ];
+  return {
+    headline: `转会窗关闭：签下 ${signed.length}/${state.players.length} 人，花费 ${formatFee(spend)}`,
+    details,
+    nextBrief: '下一份委托：把新援注册进 25 人名单，补齐本土青训与位置覆盖。',
+  };
 }
 
 /* ==========================================================================
@@ -1001,7 +1307,7 @@ function reviveEventLog(raw: unknown): EventLogEntry[] | null {
 export function reviveTransfersState(raw: unknown): TransfersState | null {
   if (!raw || typeof raw !== 'object') return null;
   const data = raw as Record<string, unknown>;
-  if (data.version !== 1) return null;
+  if (data.version !== TRANSFER_STATE_VERSION) return null;
   if (!isPhase(data.phase)) return null;
   if (data.mode !== 'normal' && data.mode !== 'showcase') return null;
   if (!isRngState(data.rng)) return null;
@@ -1017,8 +1323,12 @@ export function reviveTransfersState(raw: unknown): TransfersState | null {
   }
   if (new Set(players.map((player) => player.id)).size !== players.length) return null;
   if (!data.modules || typeof data.modules !== 'object') return null;
-  const modules = data.modules as Record<string, unknown>;
-  if (typeof modules.budget !== 'boolean' || typeof modules.negotiation !== 'boolean') return null;
+  const modulesRaw = data.modules as Record<string, unknown>;
+  const modules: TransferModules = { budget: false, negotiation: false, galaxy: false, infiniteWait: false };
+  for (const id of TRANSFER_MODULE_IDS) {
+    if (typeof modulesRaw[id] !== 'boolean') return null;
+    modules[id] = modulesRaw[id] as boolean;
+  }
   if (!data.evidence || typeof data.evidence !== 'object') return null;
   const evidence = data.evidence as Record<string, unknown>;
   if (
@@ -1045,12 +1355,13 @@ export function reviveTransfersState(raw: unknown): TransfersState | null {
   }
   if (!isFiniteNumber(data.round) || data.round < 0) return null;
   if (!isFiniteNumber(data.actionsTaken) || data.actionsTaken < 0) return null;
+  if (!isFiniteNumber(data.verifyAttempt) || data.verifyAttempt < 1) return null;
   if (!isFiniteNumber(data.budget) || data.budget < 0) return null;
   if (!isFiniteNumber(data.wage) || data.wage < 0) return null;
   if (!isFiniteNumber(data.seed)) return null;
 
   return {
-    version: 1,
+    version: TRANSFER_STATE_VERSION,
     phase: data.phase,
     mode: data.mode,
     fastPlay: data.fastPlay as boolean,
@@ -1062,7 +1373,8 @@ export function reviveTransfersState(raw: unknown): TransfersState | null {
       operatedMechanic: evidence.operatedMechanic,
       transferred: evidence.transferred,
     },
-    modules: { budget: modules.budget, negotiation: modules.negotiation },
+    modules,
+    verifyAttempt: Math.floor(data.verifyAttempt),
     faultSigned,
     faultFinished: data.faultFinished as boolean,
     diagnoseResolved: data.diagnoseResolved as boolean,

@@ -16,6 +16,7 @@ import type { RngState } from '../../engine/rng';
 import { recordEvent } from '../../engine/events';
 import { createEvidence } from '../../engine/types';
 import type {
+  ClubUpdate,
   EventLogEntry,
   EventState,
   Evidence,
@@ -29,6 +30,9 @@ import type {
    注册规则与转会常量：界面与测试共用同一份来源。
    ========================================================================== */
 
+/** 存档结构版本；v2 增加了两个错误模块、缩减资源与尝试次数。 */
+export const SQUAD_STATE_VERSION = 2;
+
 /** 名单人数上限。 */
 export const SQUAD_LIMIT = 25;
 /** 本土青训最少人数。 */
@@ -41,10 +45,11 @@ export const WAGE_SPACE = 320;
 export const BASE_WAGE = 240;
 /** 转会预算，单位万欧（4200 万欧 = €42M）。 */
 export const TRANSFER_BUDGET = 4200;
+/** 「全权交给经纪人」错误模块：预算与工资上限各扣 10%。 */
+export const AGENT_BUDGET_RATIO = 0.9;
+export const AGENT_WAGE_RATIO = 0.9;
 /** 现有阵容固定为 21 人，签下 4 人正好 25 人。 */
 export const BASE_SQUAD_TOTAL = 21;
-export const BASE_SQUAD_COUNTS = { GK: 2, DF: 5, MF: 7, FW: 7 } as const;
-export const BASE_SQUAD_YOUTH = 7;
 /** 正常模式需要签下 4 人。 */
 export const REQUIRED_SIGNINGS = 4;
 /** 展示短局需要签下 2 人。 */
@@ -55,8 +60,23 @@ export const SCOUT_COUNT = 2;
 export type SquadPosition = keyof typeof POSITION_MIN;
 export type RegionId = 'east' | 'plateau' | 'port';
 export type SquadStep = 'scout' | 'transfer' | 'tactics' | 'registration';
-export type SquadModuleId = 'tactics' | 'scouting' | 'transfers' | 'registration';
+export type SquadModuleId =
+  | 'tactics'
+  | 'scouting'
+  | 'transfers'
+  | 'registration'
+  | 'ignoreRegistration'
+  | 'agent';
 export type SquadModules = Record<SquadModuleId, boolean>;
+
+export const SQUAD_MODULE_IDS: SquadModuleId[] = [
+  'tactics',
+  'scouting',
+  'transfers',
+  'registration',
+  'ignoreRegistration',
+  'agent',
+];
 
 export const POSITION_LABELS: Record<SquadPosition, string> = {
   GK: '门将',
@@ -66,6 +86,48 @@ export const POSITION_LABELS: Record<SquadPosition, string> = {
 };
 
 export const POSITIONS: SquadPosition[] = ['GK', 'DF', 'MF', 'FW'];
+
+export interface BaseSquadPlayer {
+  id: string;
+  name: string;
+  position: SquadPosition;
+  youth: boolean;
+}
+
+/** 现有 21 人阵容的虚构球员名单：界面用它做分组 / 槽位展示，注册检查从同一份名单推导。 */
+export const BASE_SQUAD_PLAYERS: BaseSquadPlayer[] = [
+  { id: 'base-gk-1', name: '韩铮', position: 'GK', youth: true },
+  { id: 'base-gk-2', name: '鲁迪', position: 'GK', youth: false },
+  { id: 'base-df-1', name: '白岩', position: 'DF', youth: true },
+  { id: 'base-df-2', name: '林川', position: 'DF', youth: true },
+  { id: 'base-df-3', name: '陈戍', position: 'DF', youth: false },
+  { id: 'base-df-4', name: '卡尔松', position: 'DF', youth: false },
+  { id: 'base-df-5', name: '扎伊德', position: 'DF', youth: false },
+  { id: 'base-mf-1', name: '阿贵', position: 'MF', youth: true },
+  { id: 'base-mf-2', name: '高天', position: 'MF', youth: true },
+  { id: 'base-mf-3', name: '徐朗', position: 'MF', youth: true },
+  { id: 'base-mf-4', name: '木村', position: 'MF', youth: false },
+  { id: 'base-mf-5', name: '韦斯', position: 'MF', youth: false },
+  { id: 'base-mf-6', name: '迪亚洛', position: 'MF', youth: false },
+  { id: 'base-mf-7', name: '小野', position: 'MF', youth: false },
+  { id: 'base-fw-1', name: '何塞', position: 'FW', youth: true },
+  { id: 'base-fw-2', name: '库珀', position: 'FW', youth: false },
+  { id: 'base-fw-3', name: '邓肯', position: 'FW', youth: false },
+  { id: 'base-fw-4', name: '伊力', position: 'FW', youth: false },
+  { id: 'base-fw-5', name: '拉赫', position: 'FW', youth: false },
+  { id: 'base-fw-6', name: '马丁', position: 'FW', youth: false },
+  { id: 'base-fw-7', name: '宁远', position: 'FW', youth: false },
+];
+
+/** 现有阵容的分位置人数，直接由名单推导，保证界面槽位与注册检查同源。 */
+export const BASE_SQUAD_COUNTS: Record<SquadPosition, number> = {
+  GK: BASE_SQUAD_PLAYERS.filter((player) => player.position === 'GK').length,
+  DF: BASE_SQUAD_PLAYERS.filter((player) => player.position === 'DF').length,
+  MF: BASE_SQUAD_PLAYERS.filter((player) => player.position === 'MF').length,
+  FW: BASE_SQUAD_PLAYERS.filter((player) => player.position === 'FW').length,
+};
+export const BASE_SQUAD_YOUTH = BASE_SQUAD_PLAYERS.filter((player) => player.youth).length;
+
 
 /* ==========================================================================
    候选、区域、战术预设与微教学方案
@@ -199,6 +261,39 @@ export const MODULE_DEGRADE_NOTES: Record<SquadModuleId, string> = {
   scouting: '关闭后所有候选能力瞬间完全公开，知识度恒为 100；没有「知识度不足的报告」（目标二不会达成）。',
   transfers: '关闭后预算与工资空间不再限制签约，报价失去代价；注册检查仍会算周薪总额。',
   registration: '关闭后不做人数、青训与位置覆盖检查，名单直接通过；但目标三不会达成。',
+  ignoreRegistration:
+    '无视注册规则：跳过全部注册检查，名单直接放行；看起来省事，但目标三永远无法达成，也看不到真实缺口。',
+  agent:
+    '全权交给经纪人：预算与工资上限各扣 10%，签约时不再检查预算与工资；但注册仍按缩减后的工资上限检查，很可能会失败。',
+};
+
+export interface SquadModuleInfo {
+  id: SquadModuleId;
+  name: string;
+  englishName: string;
+  description: string;
+  sideEffect: string;
+  kind: 'correct' | 'risky';
+}
+
+/** 两个错误 / 有副作用模块的完整文案；正确模块的文案来自关卡定义。 */
+export const WRONG_MODULE_INFO: Record<'ignoreRegistration' | 'agent', SquadModuleInfo> = {
+  ignoreRegistration: {
+    id: 'ignoreRegistration',
+    name: '无视注册规则',
+    englishName: 'Ignore Registration',
+    description: '把注册检查从流程里拿掉，名单直接放行，不再看人数、青训与位置。',
+    sideEffect: '跳过 25 人上限、青训、位置覆盖与工资检查；名单能交上去，但目标三永远无法达成。',
+    kind: 'risky',
+  },
+  agent: {
+    id: 'agent',
+    name: '全权交给经纪人',
+    englishName: 'Agent in Charge',
+    description: '让经纪人包办所有谈判：签约不再被预算与工资拦住，也没有竞争。',
+    sideEffect: '预算与工资上限各扣 10%（€42M→€37.8M、€320k→€288k）；注册仍按缩减后的工资上限检查，通常会失败。',
+    kind: 'risky',
+  },
 };
 
 export const SQUAD_RULE_LINES: { label: string; value: string }[] = [
@@ -295,17 +390,23 @@ export interface TacticsState {
 export interface RegistrationResult {
   enabled: boolean;
   passed: boolean;
+  /** 是否因为「无视注册规则」而跳过了检查。 */
+  skippedByIgnore: boolean;
   items: RegistrationItem[];
   total: number;
   youth: number;
   counts: Record<SquadPosition, number>;
   wage: number;
+  /** 当前模块下实际生效的工资上限（经纪人模块会砍 10%）。 */
+  wageCap: number;
+  /** 当前模块下实际生效的预算上限（经纪人模块会砍 10%）。 */
+  budgetCap: number;
   budgetUsed: number;
   note: string;
 }
 
 export interface SquadState {
-  version: 1;
+  version: typeof SQUAD_STATE_VERSION;
   phase: LevelPhase;
   mode: GameMode;
   fastPlay: boolean;
@@ -387,8 +488,20 @@ export function feeUsed(state: SquadState): number {
   return signedCandidates(state).reduce((total, candidate) => total + candidate.transferFee, 0);
 }
 
+/** 当前模块下实际生效的转会预算上限；「全权交给经纪人」会砍 10%。 */
+export function budgetCap(state: SquadState): number {
+  return state.modules.agent
+    ? Math.floor(TRANSFER_BUDGET * AGENT_BUDGET_RATIO)
+    : TRANSFER_BUDGET;
+}
+
+/** 当前模块下实际生效的周薪空间上限；「全权交给经纪人」会砍 10%。 */
+export function wageCap(state: SquadState): number {
+  return state.modules.agent ? Math.floor(WAGE_SPACE * AGENT_WAGE_RATIO) : WAGE_SPACE;
+}
+
 export function remainingBudget(state: SquadState): number {
-  return TRANSFER_BUDGET - feeUsed(state);
+  return budgetCap(state) - feeUsed(state);
 }
 
 export function wageUsed(state: SquadState): number {
@@ -396,7 +509,7 @@ export function wageUsed(state: SquadState): number {
 }
 
 export function remainingWage(state: SquadState): number {
-  return WAGE_SPACE - wageUsed(state);
+  return wageCap(state) - wageUsed(state);
 }
 
 export function youthCount(state: SquadState): number {
@@ -418,6 +531,47 @@ export function squadCounts(state: SquadState): Record<SquadPosition, number> {
 
 export function squadTotal(state: SquadState): number {
   return BASE_SQUAD_TOTAL + state.signings.length;
+}
+
+export interface RosterSlotPlayer {
+  id: string;
+  name: string;
+  youth: boolean;
+  signed: boolean;
+}
+
+export interface RosterGroup {
+  position: SquadPosition;
+  label: string;
+  min: number;
+  count: number;
+  passed: boolean;
+  players: RosterSlotPlayer[];
+  /** 距离最低覆盖还差几个位置名额。 */
+  gapToMin: number;
+}
+
+/** 名单分组 / 槽位展示：现有阵容 + 新援按位置分组，缺口一眼可见。 */
+export function rosterGroups(state: SquadState): RosterGroup[] {
+  const signed = signedCandidates(state);
+  return POSITIONS.map((position) => {
+    const basePlayers: RosterSlotPlayer[] = BASE_SQUAD_PLAYERS.filter((player) => player.position === position).map(
+      (player) => ({ id: player.id, name: player.name, youth: player.youth, signed: false }),
+    );
+    const signedPlayersList: RosterSlotPlayer[] = signed
+      .filter((candidate) => candidate.position === position)
+      .map((candidate) => ({ id: candidate.id, name: candidate.name, youth: candidate.youth, signed: true }));
+    const players = [...basePlayers, ...signedPlayersList];
+    return {
+      position,
+      label: POSITION_LABELS[position],
+      min: POSITION_MIN[position],
+      count: players.length,
+      passed: players.length >= POSITION_MIN[position],
+      players,
+      gapToMin: Math.max(0, POSITION_MIN[position] - players.length),
+    };
+  });
 }
 
 export function scoutAssignmentsTotal(state: SquadState): number {
@@ -462,13 +616,13 @@ export function abilityReport(state: SquadState, candidate: SquadCandidate): Abi
    注册检查与目标证据
    ========================================================================== */
 
-export function evaluateRegistration(state: SquadState): RegistrationResult {
+function computeRegistrationItems(state: SquadState): RegistrationItem[] {
   const counts = squadCounts(state);
   const total = squadTotal(state);
   const youth = youthCount(state);
   const wage = wageUsed(state);
-  const enabled = state.modules.registration;
-  const items: RegistrationItem[] = [
+  const cap = wageCap(state);
+  return [
     { id: 'size', label: '25 人上限', actual: total, required: SQUAD_LIMIT, passed: total <= SQUAD_LIMIT },
     { id: 'youth', label: '本土青训名额', actual: youth, required: YOUTH_MIN, passed: youth >= YOUTH_MIN },
     ...POSITIONS.map<RegistrationItem>((position) => ({
@@ -483,29 +637,55 @@ export function evaluateRegistration(state: SquadState): RegistrationResult {
           id: 'wage',
           label: '周薪空间',
           actual: wage,
-          required: WAGE_SPACE,
+          required: cap,
           passed: true,
           skipped: true,
           detail: '演示短局：工资检查从略。',
         }
-      : { id: 'wage', label: '周薪空间', actual: wage, required: WAGE_SPACE, passed: wage <= WAGE_SPACE },
+      : { id: 'wage', label: '周薪空间', actual: wage, required: cap, passed: wage <= cap },
   ];
-  const passed = enabled ? items.every((item) => item.passed) : true;
+}
+
+function buildRegistrationResult(
+  state: SquadState,
+  enabled: boolean,
+  skippedByIgnore: boolean,
+): RegistrationResult {
+  const items = computeRegistrationItems(state);
+  const strictPassed = items.every((item) => item.passed);
+  const passed = skippedByIgnore ? true : enabled ? strictPassed : true;
   return {
     enabled,
     passed,
+    skippedByIgnore,
     items,
-    total,
-    youth,
-    counts,
-    wage,
+    total: squadTotal(state),
+    youth: youthCount(state),
+    counts: squadCounts(state),
+    wage: wageUsed(state),
+    wageCap: wageCap(state),
+    budgetCap: budgetCap(state),
     budgetUsed: feeUsed(state),
-    note: enabled
-      ? passed
-        ? '名单通过全部注册检查。'
-        : '名单没有通过注册检查：先看具体缺口，再决定重开本局补哪一项。'
-      : '注册规则未启用：不检查人数、青训、位置覆盖与工资，名单直接通过。',
+    note: skippedByIgnore
+      ? '已启用「无视注册规则」：跳过全部注册检查，名单直接放行；目标三永远无法达成。'
+      : enabled
+        ? strictPassed
+          ? '名单通过全部注册检查。'
+          : '名单没有通过注册检查：先看具体缺口，再决定回到维修台重新配置补哪一项。'
+        : '注册规则未启用：不检查人数、青训、位置覆盖与工资，名单直接通过。',
   };
+}
+
+/** 当前实际生效的注册检查（可能被「无视注册规则」或关闭模块退化）。 */
+export function evaluateRegistration(state: SquadState): RegistrationResult {
+  const skippedByIgnore = state.modules.ignoreRegistration;
+  const enabled = state.modules.registration && !skippedByIgnore;
+  return buildRegistrationResult(state, enabled, skippedByIgnore);
+}
+
+/** 不受模块开关影响的真实注册检查：用于动态反事实题与「关掉规则会怎样」的对照。 */
+export function strictRegistration(state: SquadState): RegistrationResult {
+  return buildRegistrationResult(state, true, false);
 }
 
 export interface SquadGoal {
@@ -538,7 +718,11 @@ export function evaluateGoals(state: SquadState): SquadGoal[] {
 
   const registration = state.registration;
   const registrationAchieved =
-    state.modules.registration && registration !== null && registration.enabled && registration.passed;
+    state.modules.registration &&
+    !state.modules.ignoreRegistration &&
+    registration !== null &&
+    registration.enabled &&
+    registration.passed;
 
   const tacticsDetail = state.modules.tactics
     ? tacticsAchieved
@@ -554,16 +738,18 @@ export function evaluateGoals(state: SquadState): SquadGoal[] {
         : '球探系统已启用，但还没有完成 1 轮考察。'
     : '球探网络未启用，所有候选信息完全公开，目标二无法达成。';
 
-  const registrationDetail = state.modules.registration
-    ? registration
-      ? registration.passed
-        ? `人数 ${registration.total}/${SQUAD_LIMIT} · 青训 ${registration.youth}/${YOUTH_MIN} · 位置覆盖与工资均通过。`
-        : `未通过：${registration.items
-            .filter((item) => !item.passed)
-            .map((item) => `${item.label} ${item.actual}/${item.required}`)
-            .join('、')}。`
-      : '还没有运行注册检查。'
-    : '注册规则未启用，名单直接通过，目标三无法达成。';
+  const registrationDetail = state.modules.ignoreRegistration
+    ? '已启用「无视注册规则」：注册检查被跳过，名单直接放行，目标三永远无法达成。'
+    : state.modules.registration
+      ? registration
+        ? registration.passed
+          ? `人数 ${registration.total}/${SQUAD_LIMIT} · 青训 ${registration.youth}/${YOUTH_MIN} · 位置覆盖与工资均通过。`
+          : `未通过：${registration.items
+              .filter((item) => !item.passed)
+              .map((item) => `${item.label} ${item.actual}/${item.required}`)
+              .join('、')}。`
+        : '还没有运行注册检查。'
+      : '注册规则未启用，名单直接通过，目标三无法达成。';
 
   return [
     { id: 'tactics', title: '目标一：战术决策', achieved: tacticsAchieved, detail: tacticsDetail },
@@ -576,15 +762,34 @@ export function goalsAllAchieved(state: SquadState): boolean {
   return evaluateGoals(state).every((goal) => goal.achieved);
 }
 
-/** 完成 4 名签约（短局 2 名）+ 通过注册检查，才构成 operatedMechanic 证据。 */
+/** 完成 4 名签约（短局 2 名）+ 通过真实注册检查，才构成 operatedMechanic 证据。 */
 export function operatedMechanicMet(state: SquadState): boolean {
   const registration = state.registration;
-  if (!state.modules.registration || registration === null) return false;
-  return registration.passed && state.signings.length >= requiredSignings(state);
+  if (!state.modules.registration || state.modules.ignoreRegistration || registration === null) return false;
+  return registration.enabled && registration.passed && state.signings.length >= requiredSignings(state);
 }
 
 export function isSquadComplete(state: SquadState): boolean {
   return goalsAllAchieved(state) && operatedMechanicMet(state);
+}
+
+/** 还不能归档的完整原因列表：目标未达成 / 签约不足 / 规则被绕过。 */
+export function squadArchiveProblems(state: SquadState): string[] {
+  const problems: string[] = [];
+  if (!state.registration) problems.push('还没有运行注册检查。');
+  if (state.modules.ignoreRegistration) problems.push('「无视注册规则」已启用：目标三永远无法达成。');
+  for (const goal of evaluateGoals(state)) {
+    if (!goal.achieved) problems.push(`${goal.title}未达成：${goal.detail}`);
+  }
+  if (state.signings.length < requiredSignings(state)) {
+    problems.push(`签约人数不足：${state.signings.length} / ${requiredSignings(state)} 人。`);
+  }
+  return problems;
+}
+
+export function squadArchiveBlockedReason(state: SquadState): string | null {
+  const problems = squadArchiveProblems(state);
+  return problems.length > 0 ? problems[0] : null;
 }
 
 /* ==========================================================================
@@ -651,7 +856,14 @@ export function createSquadState(options: CreateSquadOptions): SquadState {
   const rolled = createCandidates(createRng(options.seed));
   const showcase = options.showcaseOptions;
   let phase: LevelPhase = options.fastStart ? 'faultPlay' : 'commission';
-  let modules: SquadModules = { tactics: false, scouting: false, transfers: false, registration: false };
+  let modules: SquadModules = {
+    tactics: false,
+    scouting: false,
+    transfers: false,
+    registration: false,
+    ignoreRegistration: false,
+    agent: false,
+  };
   let microTaught = false;
   let microChecks = { a: false, b: false };
   let flowStarted = false;
@@ -662,12 +874,26 @@ export function createSquadState(options: CreateSquadOptions): SquadState {
       phase = 'faultPlay';
     } else if (showcase.startPhase === 'repair') {
       phase = 'repair';
-      modules = { tactics: true, scouting: true, transfers: true, registration: true };
+      modules = {
+        tactics: true,
+        scouting: true,
+        transfers: true,
+        registration: true,
+        ignoreRegistration: false,
+        agent: false,
+      };
       microTaught = true;
       microChecks = { a: true, b: true };
     } else if (showcase.startPhase === 'verify') {
       phase = 'verify';
-      modules = { tactics: true, scouting: true, transfers: true, registration: true };
+      modules = {
+        tactics: true,
+        scouting: true,
+        transfers: true,
+        registration: true,
+        ignoreRegistration: false,
+        agent: false,
+      };
       microTaught = true;
       microChecks = { a: true, b: true };
       flowStarted = true;
@@ -678,7 +904,7 @@ export function createSquadState(options: CreateSquadOptions): SquadState {
   }
 
   return {
-    version: 1,
+    version: SQUAD_STATE_VERSION,
     phase,
     mode: options.mode,
     fastPlay: showcase?.fastPlay ?? false,
@@ -713,7 +939,14 @@ export function readySquadState(seed: number, fastPlay = false): SquadState {
     ...initial,
     phase: 'verify',
     fastPlay,
-    modules: { tactics: true, scouting: true, transfers: true, registration: true },
+    modules: {
+      tactics: true,
+      scouting: true,
+      transfers: true,
+      registration: true,
+      ignoreRegistration: false,
+      agent: false,
+    },
     microChecks: { a: true, b: true },
     microTaught: true,
     flowStarted: true,
@@ -951,7 +1184,8 @@ export function canSignCandidate(state: SquadState, candidateId: string): SignCh
   if (state.signings.length >= requiredSignings(state)) {
     return { ok: false, reason: `本次名单只需要签下 ${requiredSignings(state)} 人，已经签满。` };
   }
-  if (state.modules.transfers) {
+  // 「全权交给经纪人」会让签约不再被预算 / 工资拦住（无竞争、无谈判）。
+  if (state.modules.transfers && !state.modules.agent) {
     if (candidate.transferFee > remainingBudget(state)) {
       return {
         ok: false,
@@ -990,15 +1224,19 @@ export function signCandidate(state: SquadState, candidateId: string): SquadActi
         ...flowSnapshot({ ...state, signings: nextSignings }),
         knowledge,
       },
-      delta: state.modules.transfers
-        ? `-${formatSquadFee(candidate.transferFee)} / -${formatSquadWage(candidate.wage)}`
-        : '预算与工资未启用，本次签约不扣资源（退化规则）',
+      delta: state.modules.agent
+        ? `-${formatSquadFee(candidate.transferFee)} / -${formatSquadWage(candidate.wage)}（经纪人：未做预算/工资检查）`
+        : state.modules.transfers
+          ? `-${formatSquadFee(candidate.transferFee)} / -${formatSquadWage(candidate.wage)}`
+          : '预算与工资未启用，本次签约不扣资源（退化规则）',
       note:
-        knowledge > 0 && knowledge < 100
-          ? `本次选择依据知识度 ${knowledge} 的考察报告。`
-          : knowledge >= 100
-            ? '球探网络未启用，所有能力信息完全公开。'
-            : '这名候选所在区域没有考察报告，属于盲目签约。',
+        state.modules.agent
+          ? '全权交给经纪人：这次签约没有经过预算与工资检查，注册阶段仍会按缩减后的上限重新检查。'
+          : knowledge > 0 && knowledge < 100
+            ? `本次选择依据知识度 ${knowledge} 的考察报告。`
+            : knowledge >= 100
+              ? '球探网络未启用，所有能力信息完全公开。'
+              : '这名候选所在区域没有考察报告，属于盲目签约。',
     },
   );
   return { state: next, ok: true };
@@ -1018,7 +1256,7 @@ export function finishSigning(state: SquadState): SquadActionResult {
       note:
         state.signings.length >= requiredSignings(state)
           ? '签约人数达到目标，进入战术阶段。'
-          : `签约人数不足 ${requiredSignings(state)} 人，注册检查很可能会失败；之后可以重开本局。`,
+          : `签约人数不足 ${requiredSignings(state)} 人，注册检查很可能会失败；之后可以回到维修台重新配置。`,
     },
   );
   return { state: next, ok: true };
@@ -1114,8 +1352,12 @@ export function checkRegistration(state: SquadState): SquadActionResult {
   }
   if (state.registration) return { state, ok: false, reason: '本局已经运行过注册检查，重复检查不会改变名单。' };
   const registration = evaluateRegistration(state);
-  const operated =
-    state.modules.registration && registration.passed && state.signings.length >= requiredSignings(state);
+  const operated = operatedMechanicMet({ ...state, registration });
+  const label = registration.skippedByIgnore
+    ? '运行注册检查：已启用「无视注册规则」，跳过检查直接放行'
+    : registration.enabled
+      ? `运行注册检查：${registration.passed ? '通过' : '未通过'}`
+      : '运行注册检查：注册规则未启用（退化通过）';
   const next = log(
     {
       ...state,
@@ -1125,13 +1367,15 @@ export function checkRegistration(state: SquadState): SquadActionResult {
     {
       phase: 'verify',
       action: 'registration-check',
-      label: `运行注册检查：${registration.enabled ? (registration.passed ? '通过' : '未通过') : '注册规则未启用（退化通过）'}`,
+      label,
       before: { total: squadTotal(state), youth: youthCount(state) },
       after: { total: registration.total, youth: registration.youth, passed: registration.passed ? 1 : 0 },
-      delta: registration.passed ? '名单可注册' : '存在缺口',
-      note: registration.enabled
-        ? registration.note
-        : '注册规则未启用，名单直接通过，但目标三不会达成。',
+      delta: registration.skippedByIgnore
+        ? '目标三无法达成'
+        : registration.passed
+          ? '名单可注册'
+          : '存在缺口',
+      note: registration.note,
     },
   );
   return { state: next, ok: true };
@@ -1163,9 +1407,144 @@ export function advanceToReflection(state: SquadState): SquadActionResult {
    结算与反思
    ========================================================================== */
 
+export interface CounterfactualQuestion {
+  question: string;
+  options: QuizOption[];
+  correctId: string;
+  explanations: Record<string, string>;
+}
+
+/**
+ * 按真实缺口动态生成反事实题：
+ * - 名单有真实缺口（青训 / 工资 / 位置 / 人数）时，直接问这个缺口怎么补；
+ * - 名单按真实规则通过时，用「青训差 1」「再签 1 名非青训」等假设继续检验理解；
+ * - 启用「无视注册规则」时，strictRegistration 会给出被跳过的真实缺口，题目据此生成。
+ */
+export function buildCounterfactual(state: SquadState): CounterfactualQuestion {
+  const strict = strictRegistration(state);
+  const gaps = strict.items.filter((item) => !item.passed && !item.skipped);
+  const firstGap = gaps[0];
+
+  if (firstGap) {
+    if (firstGap.id === 'youth') {
+      if (strict.total >= SQUAD_LIMIT) {
+        return {
+          question: `按真实规则检查：名单 ${strict.total}/${SQUAD_LIMIT} 人已经满员，本土青训只有 ${strict.youth}/${YOUTH_MIN} 人。如果直接再签 1 名本土青训，注册能通过吗？需要先处理哪个名额？`,
+          options: COUNTERFACTUAL_OPTIONS,
+          correctId: COUNTERFACTUAL_CORRECT_ID,
+          explanations: COUNTERFACTUAL_EXPLANATIONS,
+        };
+      }
+      return {
+        question: `按真实规则检查：名单 ${strict.total}/${SQUAD_LIMIT} 人还有空位，但本土青训只有 ${strict.youth}/${YOUTH_MIN} 人。直接再签 1 名本土青训，注册能通过吗？`,
+        options: [
+          { id: 'sign-youth', label: '能：人数还有空位，补 1 名本土青训后青训与人数同时满足。' },
+          { id: 'must-remove', label: '不能：必须先从现有名单移出 1 名非青训球员，才能签青训。' },
+          { id: 'ignore-youth', label: '能：青训名额只在转会时检查，注册时不再检查。' },
+          { id: 'wage-only', label: '不能：青训补不补无所谓，工资空间一定会超。' },
+        ],
+        correctId: 'sign-youth',
+        explanations: {
+          'sign-youth': '正确：人数上限还有空位，补 1 名本土青训就同时满足人数与青训两个约束。',
+          'must-remove': '人数还没满，不需要先腾名额；直接签青训就能补齐。',
+          'ignore-youth': '青训名额正是注册检查的一项，不能用转会阶段的说法绕过去。',
+          'wage-only': '工资是另一个约束；这道题的关键是青训与人数都还有操作空间。',
+        },
+      };
+    }
+
+    if (firstGap.id === 'wage') {
+      const over = Math.max(0, strict.wage - strict.wageCap);
+      return {
+        question: `按真实规则检查：周薪 ${strict.wage}k/周 超过上限 ${strict.wageCap}k/周，超出 ${over}k。要让名单通过注册，至少需要腾出多少周薪空间？`,
+        options: [
+          { id: 'clear-over', label: `至少腾出 ${over}k/周，把周薪总额降到 ${strict.wageCap}k/周 以内。` },
+          { id: 'no-check', label: '不用腾：注册检查只看人数，不看工资。' },
+          { id: 'double', label: `要腾出 ${over * 2}k/周，超出 1 倍才需要停。` },
+          { id: 'budget', label: '只要转会预算够，工资超一点也能注册。' },
+        ],
+        correctId: 'clear-over',
+        explanations: {
+          'clear-over': `正确：周薪上限是硬约束，当前超了 ${over}k/周，至少要腾出这么多空间。`,
+          'no-check': '工资空间是注册检查的一项，不是只显示的数字。',
+          double: `不需要超额腾出，超过上限的部分正好是 ${over}k/周。`,
+          budget: '转会预算与工资是两个独立上限，预算充足不能抵消工资超限。',
+        },
+      };
+    }
+
+    if (firstGap.id === 'size') {
+      const over = strict.total - SQUAD_LIMIT;
+      return {
+        question: `按真实规则检查：名单 ${strict.total}/${SQUAD_LIMIT} 人，超出上限 ${over} 人。最直接的修复是什么？`,
+        options: [
+          { id: 'remove', label: `移出 ${over} 名球员，把人数降到 ${SQUAD_LIMIT} 人以内。` },
+          { id: 'ignore', label: '不用处理：人数上限只是建议。' },
+          { id: 'add', label: '再签 1 名青训球员，青训名额会抵消多出来的人数。' },
+          { id: 'wage', label: '只要工资不超，人数超出也没关系。' },
+        ],
+        correctId: 'remove',
+        explanations: {
+          remove: `正确：25 人是硬上限，超出 ${over} 人就必须先移出球员。`,
+          ignore: '25 人上限是注册规则的一部分，不是建议。',
+          add: '再签人只会让超出更多；青训名额不会抵消人数上限。',
+          wage: '工资与人数是两个独立检查项，工资合规不能抵消人数超出。',
+        },
+      };
+    }
+
+    const position = POSITIONS.find((item) => item.toLowerCase() === firstGap.id);
+    const label = position ? POSITION_LABELS[position] : firstGap.label;
+    const gapCount = firstGap.required - firstGap.actual;
+    return {
+      question: `按真实规则检查：${firstGap.label}只有 ${firstGap.actual}/${firstGap.required} 人，还差 ${gapCount} 人。最直接的补法是什么？`,
+      options: [
+        { id: 'add-position', label: `再签 ${gapCount} 名${label}球员，补足 ${firstGap.required} 人的最低覆盖。` },
+        { id: 'add-any', label: '随便再签 1 名球员就行，注册不检查位置。' },
+        { id: 'youth-only', label: '只补本土青训名额，位置覆盖会自动满足。' },
+        { id: 'remove', label: '移出 1 名其他位置球员来腾出位置。' },
+      ],
+      correctId: 'add-position',
+      explanations: {
+        'add-position': `正确：位置覆盖按位置单独计数，${label}还差 ${gapCount} 人。`,
+        'add-any': '位置覆盖是独立检查项，签其他位置补不上这个缺口。',
+        'youth-only': '青训名额与位置覆盖是两套检查，补青训不等于补位置。',
+        remove: '移出球员只会让某个位置人数更少，不能补上缺口。',
+      },
+    };
+  }
+
+  if (strict.total >= SQUAD_LIMIT) {
+    return {
+      question: `这份名单按真实规则检查可以通过：${strict.total}/${SQUAD_LIMIT} 人、青训 ${strict.youth}/${YOUTH_MIN}。反事实：如果青训只有 ${Math.max(0, strict.youth - 1)} 人（差 1），而人数仍然满 ${SQUAD_LIMIT}，再签 1 名本土青训能直接通过吗？`,
+      options: COUNTERFACTUAL_OPTIONS,
+      correctId: COUNTERFACTUAL_CORRECT_ID,
+      explanations: COUNTERFACTUAL_EXPLANATIONS,
+    };
+  }
+
+  return {
+    question: `这份名单按真实规则检查可以通过：${strict.total}/${SQUAD_LIMIT} 人、青训 ${strict.youth}/${YOUTH_MIN}。反事实：如果现在再签 1 名非青训球员（人数变成 ${strict.total + 1} 人，仍未满 ${SQUAD_LIMIT}），青训名额仍是 ${strict.youth}/${YOUTH_MIN}，注册还能通过吗？`,
+    options: [
+      { id: 'still-pass', label: '能：人数没超、青训没减少，其他位置覆盖也不变。' },
+      { id: 'youth-fail', label: '不能：签非青训球员会让青训名额立刻不足。' },
+      { id: 'remove', label: '不能：必须先从现有名单移出 1 名球员。' },
+      { id: 'wage', label: '不能：再签任何人都会让工资一定超限。' },
+    ],
+    correctId: 'still-pass',
+    explanations: {
+      'still-pass': '正确：人数上限还有空位，青训人数不变，其他检查项也没有被破坏。',
+      'youth-fail': '青训人数是绝对数量，签非青训不会减少已有青训人数。',
+      remove: '人数还没满，不需要先腾名额。',
+      wage: '工资是否超限取决于具体球员，不是「再签任何人」都会超。',
+    },
+  };
+}
+
 export function answerCounterfactual(state: SquadState, optionId: string): SquadActionResult {
   if (state.phase !== 'transfer') return { state, ok: false, reason: '现在不在结算阶段。' };
-  if (optionId !== COUNTERFACTUAL_CORRECT_ID) {
+  const question = buildCounterfactual(state);
+  if (optionId !== question.correctId) {
     return { state, ok: false, correct: false, reason: '这个计算还没有对上，看看解释再试一次。' };
   }
   const next = log(
@@ -1173,10 +1552,10 @@ export function answerCounterfactual(state: SquadState, optionId: string): Squad
     {
       phase: 'transfer',
       action: 'counterfactual-correct',
-      label: '反事实计算正确：25 人满员时必须先腾出名额',
+      label: `反事实计算正确：${question.options.find((option) => option.id === optionId)?.label.slice(0, 24) ?? ''}…`,
       before: { counterfactual: 0 },
       after: { counterfactual: 1 },
-      note: '青训名额与人数上限是两个独立约束，必须同时满足。',
+      note: question.explanations[optionId] ?? '动态反事实题按真实缺口生成。',
     },
   );
   return { state: next, ok: true, correct: true };
@@ -1229,8 +1608,9 @@ export function skipReflection(state: SquadState): SquadActionResult {
 
 export function restartRun(state: SquadState): SquadActionResult {
   if (state.phase !== 'verify' && state.phase !== 'transfer' && state.phase !== 'summary') {
-    return { state, ok: false, reason: '现在还不能重开名单流程。' };
+    return { state, ok: false, reason: '现在还不能回到维修台重新配置。' };
   }
+  const keptLog = state.eventLog.filter((entry) => entry.phase !== 'verify');
   const next = log(
     {
       ...state,
@@ -1248,15 +1628,16 @@ export function restartRun(state: SquadState): SquadActionResult {
       reflectionConfirmed: false,
       skippedReflection: false,
       restarts: state.restarts + 1,
+      eventLog: keptLog,
       evidence: { ...state.evidence, operatedMechanic: false, transferred: false },
     },
     {
       phase: 'repair',
       action: 'restart',
-      label: `重开本局：清空名单流程成绩（第 ${state.restarts + 1} 次）`,
+      label: `回到维修台重新配置：清空名单流程成绩（第 ${state.restarts + 1} 次）`,
       before: { signings: state.signings.length, step: state.step },
       after: { signings: 0, step: 'scout', phase: 'repair' },
-      note: '模块配置与注册微教学保留；可以调整模块后重新开始名单流程。',
+      note: '本轮验证成绩已清空；模块配置与注册微教学保留，可以调整模块后重新开始名单流程。',
     },
   );
   return { state: next, ok: true };
@@ -1269,11 +1650,63 @@ export function restartRun(state: SquadState): SquadActionResult {
 export function squadSummaryLines(state: SquadState): string[] {
   const goals = evaluateGoals(state);
   const registration = state.registration ?? evaluateRegistration(state);
+  const moduleLine = [
+    `双形态战术（${state.modules.tactics ? '已启用' : '未启用'}）`,
+    `球探网络（${state.modules.scouting ? '已启用' : '未启用'}）`,
+    `转会谈判（${state.modules.transfers ? '已启用' : '未启用'}）`,
+    `阵容注册（${state.modules.registration ? '已启用' : '未启用'}）`,
+    state.modules.ignoreRegistration ? '无视注册规则（已启用，目标三被跳过）' : '',
+    state.modules.agent ? '全权交给经纪人（已启用，预算/工资各扣 10%）' : '',
+  ]
+    .filter(Boolean)
+    .join('、');
+  const registrationText = registration.skippedByIgnore
+    ? '被「无视注册规则」跳过'
+    : registration.enabled
+      ? registration.passed
+        ? '通过'
+        : '未通过'
+      : '在退化规则下直接通过';
   return [
-    `规则组合：双形态战术（${state.modules.tactics ? '已启用' : '未启用'}）、球探网络（${state.modules.scouting ? '已启用' : '未启用'}）、转会谈判（${state.modules.transfers ? '已启用' : '未启用'}）、阵容注册（${state.modules.registration ? '已启用' : '未启用'}）同时作用于同一份名单。`,
-    `真实操作：${state.signings.length} 次签约，名单 ${registration.total}/${SQUAD_LIMIT} 人、青训 ${registration.youth}/${YOUTH_MIN}、周薪 €${registration.wage}k/周；注册检查${registration.enabled ? (registration.passed ? '通过' : '未通过') : '在退化规则下直接通过'}。三项目标达成 ${goals.filter((goal) => goal.achieved).length} / 3。`,
+    `规则组合：${moduleLine}，同时作用于同一份名单。`,
+    `真实操作：${state.signings.length} 次签约，名单 ${registration.total}/${SQUAD_LIMIT} 人、青训 ${registration.youth}/${YOUTH_MIN}、周薪 €${registration.wage}k/${registration.wageCap}k；注册检查${registrationText}。三项目标达成 ${goals.filter((goal) => goal.achieved).length} / 3。`,
     `代价与组合：注册规则把「收集强球员」变成「拼一张能过关的名单」——人数、青训、位置与工资四个名额同时被占用，补一个缺口常常要放弃另一个更强的选择。`,
   ];
+}
+
+/** 俱乐部时间线：只写真实名单、注册检查、位置覆盖、工资与预算数据。 */
+export function buildSquadClubUpdate(state: SquadState): ClubUpdate {
+  const registration = state.registration ?? evaluateRegistration(state);
+  const signed = signedCandidates(state);
+  const signedYouth = signed.filter((candidate) => candidate.youth).length;
+  const coverage = rosterGroups(state)
+    .map((group) => `${group.label} ${group.count}/${group.min}`)
+    .join('、');
+  const registrationText = registration.skippedByIgnore
+    ? '被「无视注册规则」跳过'
+    : registration.enabled
+      ? registration.passed
+        ? '通过'
+        : '未通过'
+      : '注册规则未启用（退化放行）';
+  const risky = [
+    state.modules.ignoreRegistration ? '无视注册规则' : '',
+    state.modules.agent ? '全权交给经纪人' : '',
+  ].filter(Boolean);
+  return {
+    headline: `注册日：名单 ${registration.total}/${SQUAD_LIMIT} 人，青训 ${registration.youth}/${YOUTH_MIN}，周薪 €${registration.wage}k/€${registration.wageCap}k`,
+    details: [
+      `注册检查：${registrationText}；人数 ${registration.total}/${SQUAD_LIMIT}、青训 ${registration.youth}/${YOUTH_MIN}、周薪 €${registration.wage}k / €${registration.wageCap}k。`,
+      `位置覆盖：${coverage}。`,
+      `转会：预算使用 ${formatSquadFee(feeUsed(state))} / ${formatSquadFee(registration.budgetCap)}；新援 ${signed.length} 人${
+        signed.length > 0 ? `（${signed.map((candidate) => candidate.name).join('、')}），其中本土青训 ${signedYouth} 人` : ''
+      }。`,
+      `模块：双形态战术${state.modules.tactics ? '已启用' : '未启用'}、球探网络${state.modules.scouting ? '已启用' : '未启用'}、转会谈判${state.modules.transfers ? '已启用' : '未启用'}、阵容注册${state.modules.registration ? '已启用' : '未启用'}${
+        risky.length > 0 ? `；另装了${risky.join('、')}` : ''
+      }。`,
+    ],
+    nextBrief: '下一份委托：带着这份真实名单进入新赛季，观察战术、球探与注册规则在比赛里的连锁反应。',
+  };
 }
 
 /* ==========================================================================
@@ -1286,7 +1719,7 @@ function isFiniteNumber(value: unknown): value is number {
 
 const PHASE_LIST: LevelPhase[] = ['commission', 'faultPlay', 'diagnose', 'repair', 'verify', 'transfer', 'summary'];
 const STEP_LIST: SquadStep[] = ['scout', 'transfer', 'tactics', 'registration'];
-const MODULE_IDS: SquadModuleId[] = ['tactics', 'scouting', 'transfers', 'registration'];
+const MODULE_IDS: SquadModuleId[] = SQUAD_MODULE_IDS;
 
 function isPhase(value: unknown): value is LevelPhase {
   return typeof value === 'string' && (PHASE_LIST as string[]).includes(value);
@@ -1326,8 +1759,10 @@ function reviveRegistration(raw: unknown): RegistrationResult | null {
   if (!raw || typeof raw !== 'object') return null;
   const data = raw as Record<string, unknown>;
   if (typeof data.enabled !== 'boolean' || typeof data.passed !== 'boolean') return null;
+  if (typeof data.skippedByIgnore !== 'boolean') return null;
   if (!Array.isArray(data.items)) return null;
   if (!isFiniteNumber(data.total) || !isFiniteNumber(data.youth) || !isFiniteNumber(data.wage)) return null;
+  if (!isFiniteNumber(data.wageCap) || !isFiniteNumber(data.budgetCap)) return null;
   if (!isFiniteNumber(data.budgetUsed) || typeof data.note !== 'string') return null;
   if (!data.counts || typeof data.counts !== 'object') return null;
   const counts = data.counts as Record<string, unknown>;
@@ -1353,11 +1788,14 @@ function reviveRegistration(raw: unknown): RegistrationResult | null {
   return {
     enabled: data.enabled,
     passed: data.passed,
+    skippedByIgnore: data.skippedByIgnore,
     items,
     total: data.total,
     youth: data.youth,
     counts: { GK: counts.GK as number, DF: counts.DF as number, MF: counts.MF as number, FW: counts.FW as number },
     wage: data.wage,
+    wageCap: data.wageCap,
+    budgetCap: data.budgetCap,
     budgetUsed: data.budgetUsed,
     note: data.note,
   };
@@ -1402,7 +1840,7 @@ function reviveScouts(raw: unknown): ScoutsState | null {
 export function reviveSquadState(raw: unknown): SquadState | null {
   if (!raw || typeof raw !== 'object') return null;
   const data = raw as Record<string, unknown>;
-  if (data.version !== 1) return null;
+  if (data.version !== SQUAD_STATE_VERSION) return null;
   if (!isPhase(data.phase)) return null;
   if (data.mode !== 'normal' && data.mode !== 'showcase') return null;
   if (!isStep(data.step)) return null;
@@ -1440,7 +1878,14 @@ export function reviveSquadState(raw: unknown): SquadState | null {
   }
   if (!data.modules || typeof data.modules !== 'object') return null;
   const modulesRaw = data.modules as Record<string, unknown>;
-  const modules: SquadModules = { tactics: false, scouting: false, transfers: false, registration: false };
+  const modules: SquadModules = {
+    tactics: false,
+    scouting: false,
+    transfers: false,
+    registration: false,
+    ignoreRegistration: false,
+    agent: false,
+  };
   for (const id of MODULE_IDS) {
     if (typeof modulesRaw[id] !== 'boolean') return null;
     modules[id] = modulesRaw[id] as boolean;
@@ -1476,7 +1921,7 @@ export function reviveSquadState(raw: unknown): SquadState | null {
   if (data.registration !== null && !registration) return null;
 
   return {
-    version: 1,
+    version: SQUAD_STATE_VERSION,
     phase: data.phase,
     mode: data.mode,
     fastPlay: data.fastPlay as boolean,

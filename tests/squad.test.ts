@@ -12,13 +12,19 @@ import {
   REQUIRED_SIGNINGS,
   REQUIRED_SIGNINGS_FAST,
   SQUAD_LIMIT,
+  SQUAD_MODULE_IDS,
+  SQUAD_STATE_VERSION,
   WAGE_SPACE,
+  WRONG_MODULE_INFO,
   YOUTH_MIN,
   abilityReport,
   advanceToReflection,
   answerCounterfactual,
   assignScout,
+  budgetCap,
+  buildCounterfactual,
   buildMatchReport,
+  buildSquadClubUpdate,
   canSignCandidate,
   checkMicroList,
   checkRegistration,
@@ -37,6 +43,7 @@ import {
   regionKnowledge,
   restartRun,
   reviveSquadState,
+  rosterGroups,
   scoutAssignmentsTotal,
   setMatchDecision,
   setOutOfPossessionShape,
@@ -45,11 +52,14 @@ import {
   signCandidate,
   skipReflection,
   skipTactics,
+  squadArchiveProblems,
   squadSummaryLines,
   startFlow,
   startMicroTeaching,
+  strictRegistration,
+  wageCap,
 } from '../src/game/levels/squad/logic';
-import type { RegionId, SquadActionResult, SquadState } from '../src/game/levels/squad/logic';
+import type { RegionId, SquadActionResult, SquadModuleId, SquadState } from '../src/game/levels/squad/logic';
 
 afterEach(cleanup);
 
@@ -387,7 +397,14 @@ describe('赛季名单 · 维修、锁定与重开', () => {
     expect(restarted.restarts).toBe(1);
     expect(restarted.microTaught).toBe(true);
     expect(restarted.microChecks).toEqual({ a: true, b: true });
-    expect(restarted.modules).toEqual({ tactics: true, scouting: true, transfers: true, registration: true });
+    expect(restarted.modules).toEqual({
+      tactics: true,
+      scouting: true,
+      transfers: true,
+      registration: true,
+      ignoreRegistration: false,
+      agent: false,
+    });
     expect(restarted.evidence.experiencedFault).toBe(true);
     expect(restarted.evidence.operatedMechanic).toBe(false);
     expect(restarted.evidence.transferred).toBe(false);
@@ -446,7 +463,7 @@ describe('赛季名单 · 同种子与存档恢复', () => {
     const state = reachRegistration();
     expect(reviveSquadState(null)).toBeNull();
     expect(reviveSquadState({})).toBeNull();
-    expect(reviveSquadState({ ...clone(state), version: 2 })).toBeNull();
+    expect(reviveSquadState({ ...clone(state), version: 1 })).toBeNull();
     expect(reviveSquadState({ ...clone(state), candidates: [] })).toBeNull();
     expect(reviveSquadState({ ...clone(state), modules: {} })).toBeNull();
     expect(reviveSquadState({ ...clone(state), signings: ['nobody'] })).toBeNull();
@@ -477,6 +494,7 @@ describe('赛季名单 · UI 冒烟测试', () => {
     for (const name of ['阿迪力', '高桥凌', '周原', '李沐']) {
       fireEvent.click(screen.getByRole('button', { name: `签下 ${name}` }));
     }
+    expect(screen.getAllByText(/当前名单可通过/).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('button', { name: '结束签约，进入战术阶段' }));
     fireEvent.click(screen.getByRole('radio', { name: /4-3-3 进攻/ }));
     fireEvent.click(screen.getByRole('radio', { name: /4-4-2 中位块/ }));
@@ -490,6 +508,11 @@ describe('赛季名单 · UI 冒烟测试', () => {
     fireEvent.click(screen.getByRole('button', { name: '确认这条解释并归档' }));
     expect(screen.getByText('归档 · 赛季名单完成记录')).toBeTruthy();
     expect(onComplete).toHaveBeenCalledTimes(1);
+    const payload = onComplete.mock.calls[0]?.[0] as {
+      clubUpdate?: { headline: string; details: string[] };
+    };
+    expect(payload.clubUpdate?.headline).toContain('25/25');
+    expect(payload.clubUpdate?.details).toHaveLength(4);
     fireEvent.click(screen.getByRole('button', { name: '完成委托并返回修理铺' }));
     expect(onComplete).toHaveBeenCalledTimes(1);
     expect(onExit).toHaveBeenCalledTimes(1);
@@ -513,6 +536,307 @@ describe('赛季名单 · UI 冒烟测试', () => {
     fireEvent.click(screen.getByRole('button', { name: '检查方案 A' }));
     fireEvent.click(screen.getByRole('button', { name: '检查方案 B' }));
     fireEvent.click(screen.getByRole('button', { name: '完成微教学，进入维修' }));
-    expect(screen.getByText('维修 · 四个系统一起装进名单')).toBeTruthy();
+    expect(screen.getByText('维修 · 从模块池里拼出可注册的名单')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '安装模块：无视注册规则' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '安装模块：全权交给经纪人' })).toBeTruthy();
+  });
+
+  it('错误模块导致目标未达成时，归档被阻止并可回到维修台重新配置', () => {
+    const saved = ignoredSummary(2024);
+    render(
+      createElement(SquadLevel, {
+        level: getLevel('squad'),
+        mode: 'normal',
+        fastStart: false,
+        showcaseOptions: null,
+        savedState: saved,
+        onSaveState: vi.fn(),
+        onComplete: vi.fn(),
+        onExit: vi.fn(),
+      }),
+    );
+    expect(screen.getByText('还有目标没有达成')).toBeTruthy();
+    expect(screen.getAllByText(/无视注册规则/).length).toBeGreaterThan(0);
+    expect((screen.getByRole('button', { name: '完成委托并返回修理铺' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '回到维修台重新配置' }));
+    fireEvent.click(screen.getByRole('button', { name: '回到维修台' }));
+    expect(screen.getByText('维修 · 从模块池里拼出可注册的名单')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '卸载模块：无视注册规则' })).toBeTruthy();
+  });
+});
+
+/* ==========================================================================
+   v2：模块池、错误模块、失败重试、实时校验与动态反事实
+   ========================================================================== */
+
+/** 在 readySquadState 基础上替换模块配置，并走完 1 轮球探考察。 */
+function scoutedWith(patch: Partial<Record<SquadModuleId, boolean>>, seed = 7): SquadState {
+  let state = clone(readySquadState(seed));
+  state = { ...state, modules: { ...state.modules, ...patch } };
+  state = unwrap(assignScout(state, 'east'));
+  state = unwrap(assignScout(state, 'plateau'));
+  return unwrap(confirmScout(state));
+}
+
+/** 用「无视注册规则」跳过检查，走到归档（目标三必然未达成）。 */
+function ignoredSummary(seed = 7): SquadState {
+  let state = scoutedWith({ ignoreRegistration: true }, seed);
+  state = signAll(state, VALID_SIGNINGS);
+  state = unwrap(finishSigning(state));
+  state = playTactics(state);
+  state = unwrap(checkRegistration(state));
+  state = unwrap(advanceToReflection(state));
+  return unwrap(confirmReflection(state, REFLECTION_OPTIONS[0].id));
+}
+
+describe('赛季名单 v2 · 模块池与错误模块', () => {
+  it('模块池包含 4 个正确系统 + 2 个错误模块，错误模块有真实副作用说明', () => {
+    expect(SQUAD_STATE_VERSION).toBe(2);
+    expect(SQUAD_MODULE_IDS).toHaveLength(6);
+    expect(SQUAD_MODULE_IDS).toEqual([
+      'tactics',
+      'scouting',
+      'transfers',
+      'registration',
+      'ignoreRegistration',
+      'agent',
+    ]);
+    expect(WRONG_MODULE_INFO.ignoreRegistration.name).toBe('无视注册规则');
+    expect(WRONG_MODULE_INFO.ignoreRegistration.sideEffect).toContain('目标三');
+    expect(WRONG_MODULE_INFO.agent.name).toBe('全权交给经纪人');
+    expect(WRONG_MODULE_INFO.agent.sideEffect).toContain('10%');
+  });
+
+  it('「无视注册规则」跳过检查，但目标三永远无法达成、归档被阻止', () => {
+    let state = scoutedWith({ ignoreRegistration: true });
+    state = signAll(state, VALID_SIGNINGS);
+    state = unwrap(finishSigning(state));
+    state = playTactics(state);
+    state = unwrap(checkRegistration(state));
+    expect(state.registration?.skippedByIgnore).toBe(true);
+    expect(state.registration?.enabled).toBe(false);
+    expect(state.registration?.passed).toBe(true);
+    expect(state.evidence.operatedMechanic).toBe(false);
+    expect(evaluateGoals(state).find((goal) => goal.id === 'registration')?.achieved).toBe(false);
+    expect(isSquadComplete(state)).toBe(false);
+    // 跳过检查仍然可以进入结算看到后果，但归档被阻止。
+    expect(advanceToReflection(state).ok).toBe(true);
+    const summary = unwrap(confirmReflection(unwrap(advanceToReflection(state)), REFLECTION_OPTIONS[0].id));
+    expect(squadArchiveProblems(summary).join('')).toContain('目标三');
+  });
+
+  it('「全权交给经纪人」把预算/工资上限各砍 10%，签约绕过检查但注册失败', () => {
+    const plain = scoutedWith({});
+    expect(budgetCap(plain)).toBe(4200);
+    expect(wageCap(plain)).toBe(WAGE_SPACE);
+
+    const agent = scoutedWith({ agent: true });
+    expect(budgetCap(agent)).toBe(3780);
+    expect(wageCap(agent)).toBe(288);
+
+    const expensive = ['shenzhou', 'adili', 'gaoqiao', 'zhouyuan'];
+    let plainState = plain;
+    let rejected = false;
+    for (const id of expensive) {
+      const attempt = signCandidate(plainState, id);
+      if (attempt.ok) plainState = attempt.state;
+      else rejected = true;
+    }
+    expect(rejected).toBe(true);
+
+    let agentState = agent;
+    for (const id of expensive) agentState = unwrap(signCandidate(agentState, id));
+    expect(agentState.signings).toHaveLength(4);
+    expect(evaluateRegistration(agentState).budgetUsed).toBeGreaterThan(budgetCap(agentState));
+    agentState = unwrap(finishSigning(agentState));
+    agentState = playTactics(agentState);
+    agentState = unwrap(checkRegistration(agentState));
+    expect(agentState.registration?.passed).toBe(false);
+    expect(agentState.registration?.items.find((item) => item.id === 'wage')?.passed).toBe(false);
+    expect(agentState.evidence.operatedMechanic).toBe(false);
+  });
+
+  it('装错模块 → 未达成 → 回到维修台重新配置 → 换模块后可以完成', () => {
+    let state = ignoredSummary(31);
+    expect(state.phase).toBe('summary');
+    expect(isSquadComplete(state)).toBe(false);
+
+    state = unwrap(restartRun(state));
+    expect(state.phase).toBe('repair');
+    expect(state.signings).toEqual([]);
+    expect(state.registration).toBeNull();
+    expect(state.modules.ignoreRegistration).toBe(true);
+    expect(state.microTaught).toBe(true);
+    expect(state.microChecks).toEqual({ a: true, b: true });
+    expect(state.evidence.experiencedFault).toBe(true);
+    expect(state.evidence.operatedMechanic).toBe(false);
+    expect(state.evidence.transferred).toBe(false);
+    // 本轮验证成绩被清空：verify 阶段的旧操作记录不再出现。
+    expect(state.eventLog.every((entry) => entry.phase !== 'verify')).toBe(true);
+
+    state = unwrap(setSquadModule(state, 'ignoreRegistration', false));
+    state = unwrap(startFlow(state));
+    state = unwrap(assignScout(state, 'east'));
+    state = unwrap(assignScout(state, 'plateau'));
+    state = unwrap(confirmScout(state));
+    state = signAll(state, VALID_SIGNINGS);
+    state = unwrap(finishSigning(state));
+    state = playTactics(state);
+    state = unwrap(checkRegistration(state));
+    expect(state.registration?.passed).toBe(true);
+    expect(state.evidence.operatedMechanic).toBe(true);
+    expect(isSquadComplete(state)).toBe(true);
+    expect(squadArchiveProblems(state)).toEqual([]);
+    state = unwrap(advanceToReflection(state));
+    const question = buildCounterfactual(state);
+    state = unwrap(answerCounterfactual(state, question.correctId));
+    expect(state.counterfactualCorrect).toBe(true);
+  });
+
+  it('注册未通过时无法归档，先回到维修台清空本轮验证成绩', () => {
+    let state = scoutedWith({});
+    state = signAll(state, ['gaoqiao', 'zhouyuan', 'luoke', 'limu']);
+    state = unwrap(finishSigning(state));
+    state = playTactics(state);
+    state = unwrap(checkRegistration(state));
+    expect(state.registration?.passed).toBe(false);
+    expect(advanceToReflection(state).ok).toBe(false);
+    const restarted = unwrap(restartRun(state));
+    expect(restarted.phase).toBe('repair');
+    expect(restarted.signings).toEqual([]);
+    expect(restarted.eventLog.every((entry) => entry.phase !== 'verify')).toBe(true);
+    expect(restarted.microTaught).toBe(true);
+  });
+});
+
+describe('赛季名单 v2 · 实时校验与名单槽位', () => {
+  it('槽位按位置分组，现有阵容后卫缺口 1，签下后卫后实时补上', () => {
+    const base = readySquadState(3);
+    const groups = rosterGroups(base);
+    expect(groups.map((group) => `${group.position}:${group.count}`)).toEqual(['GK:2', 'DF:5', 'MF:7', 'FW:7']);
+    const df = groups.find((group) => group.position === 'DF');
+    expect(df?.gapToMin).toBe(1);
+    expect(df?.passed).toBe(false);
+    expect(df?.players).toHaveLength(5);
+    expect(df?.players.filter((player) => player.youth)).toHaveLength(2);
+
+    let state = scoutedWith({}, 3);
+    state = unwrap(signCandidate(state, 'adili'));
+    const after = rosterGroups(state).find((group) => group.position === 'DF');
+    expect(after?.count).toBe(6);
+    expect(after?.gapToMin).toBe(0);
+    expect(after?.passed).toBe(true);
+    expect(after?.players.find((player) => player.id === 'adili')?.signed).toBe(true);
+  });
+
+  it('实时注册校验随签约更新：补上青训与后卫后立即通过', () => {
+    let state = scoutedWith({});
+    const before = evaluateRegistration(state);
+    expect(before.passed).toBe(false);
+    expect(before.items.find((item) => item.id === 'youth')?.passed).toBe(false);
+
+    state = unwrap(signCandidate(state, 'adili'));
+    const after = evaluateRegistration(state);
+    expect(after.youth).toBe(YOUTH_MIN);
+    expect(after.counts.DF).toBe(6);
+    expect(after.passed).toBe(true);
+    expect(after.items.every((item) => item.passed || item.skipped)).toBe(true);
+  });
+});
+
+describe('赛季名单 v2 · 动态反事实题', () => {
+  it('名单按真实规则通过时，用 25 人满员的反事实继续提问', () => {
+    const state = reachRegistration();
+    const question = buildCounterfactual(state);
+    expect(question.question).toContain('25/25');
+    expect(question.correctId).toBe(COUNTERFACTUAL_CORRECT_ID);
+    const wrong = answerCounterfactual({ ...state, phase: 'transfer' }, 'separate');
+    expect(wrong.ok).toBe(false);
+    expect(wrong.correct).toBe(false);
+  });
+
+  it('「无视注册规则」+ 非青训 4 签：按真实青训缺口生成问题', () => {
+    let state = scoutedWith({ ignoreRegistration: true }, 41);
+    state = signAll(state, ['gaoqiao', 'zhouyuan', 'luoke', 'limu']);
+    state = unwrap(finishSigning(state));
+    state = playTactics(state);
+    state = unwrap(checkRegistration(state));
+    state = unwrap(advanceToReflection(state));
+    const question = buildCounterfactual(state);
+    expect(question.question).toContain('青训只有 7');
+    expect(question.correctId).toBe('move-out');
+    expect(unwrap(answerCounterfactual(state, 'move-out')).counterfactualCorrect).toBe(true);
+  });
+
+  it('「无视注册规则」+「经纪人」导致真实工资缺口：动态问工资要腾多少', () => {
+    let state = scoutedWith({ ignoreRegistration: true, agent: true }, 42);
+    state = signAll(state, ['shenzhou', 'adili', 'gaoqiao', 'zhouyuan']);
+    state = unwrap(finishSigning(state));
+    state = playTactics(state);
+    state = unwrap(checkRegistration(state));
+    state = unwrap(advanceToReflection(state));
+    const question = buildCounterfactual(state);
+    expect(question.question).toContain('周薪');
+    expect(question.question).toContain('288');
+    expect(question.correctId).toBe('clear-over');
+    expect(unwrap(answerCounterfactual(state, 'clear-over')).counterfactualCorrect).toBe(true);
+  });
+
+  it('真实位置覆盖缺口：动态问补哪个位置', () => {
+    let state = scoutedWith({ ignoreRegistration: true }, 43);
+    state = signAll(state, ['gaoqiao', 'shenzhou', 'luoke', 'limu']);
+    state = unwrap(finishSigning(state));
+    state = playTactics(state);
+    state = unwrap(checkRegistration(state));
+    state = unwrap(advanceToReflection(state));
+    const question = buildCounterfactual(state);
+    expect(question.question).toContain('后卫');
+    expect(question.correctId).toBe('add-position');
+  });
+
+  it('展示短局名单未满 25 人：动态问再签 1 名非青训会怎样', () => {
+    let state = readySquadState(44, true);
+    state = unwrap(assignScout(state, 'east'));
+    state = unwrap(assignScout(state, 'plateau'));
+    state = unwrap(confirmScout(state));
+    state = signAll(state, ['adili', 'zhouyuan']);
+    state = unwrap(finishSigning(state));
+    state = playTactics(state);
+    state = unwrap(checkRegistration(state));
+    expect(state.registration?.passed).toBe(true);
+    state = unwrap(advanceToReflection(state));
+    const question = buildCounterfactual(state);
+    expect(question.question).toContain('再签 1 名非青训');
+    expect(question.correctId).toBe('still-pass');
+    expect(unwrap(answerCounterfactual(state, 'still-pass')).counterfactualCorrect).toBe(true);
+  });
+});
+
+describe('赛季名单 v2 · 俱乐部时间线', () => {
+  it('clubUpdate 只写真实名单、注册检查、位置覆盖、工资与预算数据', () => {
+    const summary = reachSummary();
+    const registration = summary.registration;
+    expect(registration).not.toBeNull();
+    const club = buildSquadClubUpdate(summary);
+    expect(club.headline).toContain('25/25');
+    expect(club.headline).toContain('8/8');
+    expect(club.headline).toContain('313');
+    expect(club.details).toHaveLength(4);
+    expect(club.details[0]).toContain('注册检查：通过');
+    expect(club.details[1]).toContain('门将 2/2');
+    expect(club.details[1]).toContain('后卫 7/6');
+    expect(club.details[2]).toContain('€36.5M');
+    expect(club.details[2]).toContain('阿迪力');
+    expect(club.details[3]).toContain('球探网络已启用');
+    expect(club.nextBrief).toBeTruthy();
+  });
+
+  it('strictRegistration 不受「无视注册规则」影响，用于显示真实缺口', () => {
+    let state = scoutedWith({ ignoreRegistration: true }, 45);
+    state = signAll(state, ['gaoqiao', 'zhouyuan', 'luoke', 'limu']);
+    const strict = strictRegistration(state);
+    expect(strict.enabled).toBe(true);
+    expect(strict.passed).toBe(false);
+    expect(strict.items.find((item) => item.id === 'youth')?.passed).toBe(false);
   });
 });
