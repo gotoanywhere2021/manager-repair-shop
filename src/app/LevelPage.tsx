@@ -4,6 +4,7 @@ import type { LevelId } from '../game/engine/types';
 import { LEVEL_COMPONENTS } from './levelRegistry';
 import { KNOWLEDGE_FOR_LEVEL } from '../content/mechanismKnowledge';
 import { Button, Chip, EmptyState } from '../components/Ui';
+import { LevelDiorama } from '../components/Scene3D';
 
 export function LevelPage({ levelId }: { levelId: LevelId }) {
   const {
@@ -74,6 +75,7 @@ export function LevelPage({ levelId }: { levelId: LevelId }) {
           展示模式使用固定种子与短局参数，方便重复演示；本页操作不会写入正式进度，也不会解锁图鉴。
         </p>
       )}
+      <LevelDiorama levelId={levelId} />
       <LevelComponent
         level={level}
         mode={mode}

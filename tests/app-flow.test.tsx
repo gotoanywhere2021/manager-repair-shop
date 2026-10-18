@@ -1,4 +1,4 @@
-﻿import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { App } from '../src/app/App';
 import { PROGRESS_STORAGE_KEY, getDefaultProgress } from '../src/storage/persistence';
@@ -197,5 +197,17 @@ describe('用户流程冒烟测试（足球经理题材）', () => {
     clickButton('机制原理');
     expect(screen.getByRole('heading', { level: 1 }).textContent).toContain('底层知识');
     expect(screen.getByText('双形态战术：把“阶段”变成两套规则')).toBeTruthy();
+  });
+
+  it('主页与关卡渲染纯 CSS 3D 视觉层', () => {
+    const { container } = render(<App />);
+    expect(container.querySelector('.stadium-scene')).toBeTruthy();
+    expect(container.querySelectorAll('.stadium-scene .tabletop-pitch').length).toBe(1);
+    expect(container.querySelectorAll('.scene-card').length).toBe(3);
+
+    fireEvent.click(screen.getAllByRole('button', { name: '开始维修' })[0]);
+    const diorama = container.querySelector('.level-diorama');    expect(diorama).toBeTruthy();
+    expect(diorama?.getAttribute('aria-hidden')).toBe('true');
+    expect(diorama?.querySelector('.diorama-pitch-rig')).toBeTruthy();
   });
 });

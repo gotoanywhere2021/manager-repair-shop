@@ -10,6 +10,7 @@ import {
 import type { LevelDefinition } from '../game/engine/types';
 import type { LevelProgressSummary } from '../game/levels';
 import { Button, Chip, Meter, Panel } from '../components/Ui';
+import { StadiumScene } from '../components/Scene3D';
 
 const STATUS_LABEL = {
   'not-started': '未开始',
@@ -73,24 +74,7 @@ export function HomeScreen() {
             非官方作品：灵感来自足球经理类游戏，不使用真实俱乐部、球员或教练名称，数值为原创简化原型。
           </p>
         </div>
-        <div className="hero-visual hero-pitch" aria-hidden="true">
-          <div className="bench-card bench-commission">
-            <span className="bench-tag">战术板</span>
-            <strong>有球 4-3-3</strong>
-            <p>套边 + 内收，控球时拉开宽度。</p>
-          </div>
-          <div className="bench-card bench-module">
-            <span className="bench-tag">球探报告</span>
-            <strong>知识度 42%</strong>
-            <p>“左脚，擅长内切，速度区间 78–85。”</p>
-          </div>
-          <div className="bench-card bench-mechanism">
-            <span className="bench-tag">转会报价</span>
-            <strong>€18M + 周薪 €65k</strong>
-            <p>预算与工资空间同时占用。</p>
-          </div>
-          <span className="bench-arrow">规则变化 → 决策变化</span>
-        </div>
+        <StadiumScene />
       </section>
 
       <section className="how-strip" aria-label="维修流程">
@@ -208,7 +192,7 @@ export function HomeScreen() {
           </button>
           。
         </p>
-        <p>《足球经理修理铺》v5.1 · 非官方足球经理题材 · 进度保存在本机浏览器。</p>
+        <p>《足球经理修理铺》v5.2 · 非官方足球经理题材 · 进度保存在本机浏览器。</p>
       </footer>
     </div>
   );
@@ -281,6 +265,8 @@ function ClubOffice({ summary }: { summary: LevelProgressSummary }) {
   const nextLevel = getLevel(summary.nextLevel);
   const seasonDone = summary.completedCount >= LEVELS.length;
   const week = Math.min(summary.completedCount + 1, LEVELS.length);
+  const budgetPct = Math.max(0, Math.min(100, (club.transferBudget / 45) * 100));
+  const wagePct = Math.max(0, Math.min(100, (club.wageBudget / 350) * 100));
 
   return (
     <section className="club-office" aria-label="俱乐部办公室">
@@ -304,6 +290,28 @@ function ClubOffice({ summary }: { summary: LevelProgressSummary }) {
           {latest && <span className="club-office-time">最近更新 {formatClubTime(latest.at)}</span>}
         </div>
       </header>
+
+      <div className="club-office-dials" aria-hidden="true" title="俱乐部资源仪表">
+        <div className="club-dial">
+          <span>转会预算</span>
+          <div className="club-dial-track">
+            <i className="is-budget" style={{ width: `${budgetPct}%` }} />
+          </div>
+          <em>€{club.transferBudget}M</em>
+        </div>
+        <div className="club-dial">
+          <span>周薪空间</span>
+          <div className="club-dial-track">
+            <i className="is-wage" style={{ width: `${wagePct}%` }} />
+          </div>
+          <em>€{club.wageBudget}k</em>
+        </div>
+        <div className="club-dial club-dial-failures">
+          <span>返工</span>
+          <strong>{club.failures}</strong>
+          <em>次 · 会压缩后续预算</em>
+        </div>
+      </div>
 
       <div className="club-office-grid">
         <div className="club-latest">
