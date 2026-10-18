@@ -1,0 +1,221 @@
+/* ==========================================================================
+   展示模式：8 步演示流程。沿用全局设计变量，类名使用 .showcase- 前缀。
+   ========================================================================== */
+
+.showcase-page {
+  max-width: 1000px;
+}
+
+.showcase-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.showcase-demo-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 18px;
+  border: 1px dashed #ddc58e;
+  border-radius: var(--radius-sm);
+  background: var(--amber-soft);
+  color: #6c4508;
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+
+.showcase-demo-notice strong {
+  font-weight: 750;
+}
+
+.showcase-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+  border: 1px solid #eedcb8;
+  border-radius: var(--radius);
+  background: linear-gradient(170deg, #fffaf0, var(--surface));
+  box-shadow: var(--shadow-sm);
+}
+
+.showcase-progress .meter {
+  min-width: 0;
+}
+
+.showcase-completed-levels {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.showcase-completed-label {
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  color: #8a5006;
+}
+
+.showcase-completed-empty {
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.showcase-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.showcase-progress-note {
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+.showcase-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.showcase-step {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--speed) var(--ease), background var(--speed) var(--ease);
+}
+
+.showcase-step.is-done {
+  border-color: #c9e8d6;
+  background: linear-gradient(170deg, #f7fcf9, var(--surface));
+}
+
+.showcase-step-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.showcase-step-no {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface-weak);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
+.showcase-step.is-done .showcase-step-no {
+  border-color: var(--green);
+  background: var(--green);
+  color: #fff;
+}
+
+.showcase-step-heading {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.showcase-step-title {
+  font-size: 17px;
+  line-height: 1.4;
+}
+
+.showcase-step-desc {
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.showcase-step-cue {
+  padding: 9px 12px;
+  border-left: 3px solid var(--purple);
+  border-radius: 0 8px 8px 0;
+  background: var(--surface-weak);
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.showcase-step.is-done .showcase-step-cue {
+  border-left-color: var(--green);
+}
+
+.showcase-skip {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px dashed #ddc58e;
+  border-radius: 8px;
+  background: var(--amber-soft);
+  color: #6c4508;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.showcase-skip strong {
+  flex: none;
+  font-weight: 750;
+}
+
+.showcase-step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.showcase-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+.showcase-footer-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 680px) {
+  .showcase-step {
+    padding: 14px;
+  }
+
+  .showcase-step-head {
+    flex-wrap: wrap;
+  }
+
+  .showcase-step-head > .chip {
+    margin-left: 48px;
+  }
+
+  .showcase-step-title {
+    font-size: 16px;
+  }
+
+  .showcase-step-actions .btn {
+    width: 100%;
+  }
+}

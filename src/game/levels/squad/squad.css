@@ -1,0 +1,639 @@
+/* ==========================================================================
+   毕业关《赛季名单》专属样式：类名统一 .squad- 前缀。   ========================================================================== */
+
+.squad-muted {
+  font-size: 13px;
+  color: var(--ink-soft);
+  line-height: 1.7;
+}
+
+.squad-disabled-hint {
+  font-size: 12px;
+  color: var(--ink-faint);
+  line-height: 1.55;
+}
+
+.squad-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.squad-objective-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-weak);
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.squad-objective-list li {
+  position: relative;
+  padding-left: 18px;
+}
+
+.squad-objective-list li::before {
+  content: '→';
+  position: absolute;
+  left: 0;
+  color: var(--theme, var(--purple));
+  font-size: 10px;
+  line-height: 1.9;
+}
+
+/* 微教。*/
+.squad-micro-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.squad-micro-card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  transition: border-color var(--speed) var(--ease), background var(--speed) var(--ease), transform var(--speed) var(--ease);
+}
+
+.squad-micro-card.is-checked {
+  border-color: var(--purple);
+  background: linear-gradient(170deg, var(--purple-soft), var(--surface));
+}
+
+.squad-micro-title {
+  font-size: 15px;
+  font-weight: 750;
+}
+
+.squad-micro-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.squad-micro-pass {
+  font-size: 13px;
+  font-weight: 750;
+  color: var(--green-deep);
+}
+
+.squad-micro-fail {
+  font-size: 13px;
+  font-weight: 750;
+  color: var(--red);
+}
+
+.squad-micro-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.squad-micro-checks li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.squad-micro-checks .is-pass span:first-child {
+  color: var(--green);
+}
+
+.squad-micro-checks .is-fail {
+  color: var(--red);
+}
+
+/* 维修模块 */
+.squad-module-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
+}
+
+.squad-module-badge {
+  display: block;
+  font-size: 12px;
+  line-height: 1.6;
+  margin-top: 6px;
+}
+
+.squad-module-badge.is-on {
+  color: var(--green-deep);
+  font-weight: 650;
+}
+
+.squad-module-badge.is-off {
+  color: var(--amber);
+}
+
+/* 名单流程。*/
+.squad-flow-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-weak);
+}
+
+.squad-flow-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--ink-faint);
+  background: var(--surface);
+}
+
+.squad-flow-step.is-done {
+  color: var(--green-deep);
+}
+
+.squad-flow-step.is-active {
+  color: var(--purple-deep);
+  font-weight: 750;
+  box-shadow: 0 0 0 1px var(--purple) inset;
+}
+
+.squad-flow-current {
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--purple-soft);
+}
+
+.squad-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 球探 */
+.squad-region-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
+}
+
+.squad-region {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 15px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.squad-region.is-scouted {
+  border-color: var(--purple);
+  background: linear-gradient(170deg, var(--purple-soft), var(--surface));
+}
+
+.squad-region-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.squad-region-name {
+  font-size: 15px;
+  font-weight: 750;
+}
+
+.squad-region-candidates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.squad-region-candidates li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--surface-weak);
+}
+
+.squad-region-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+/* 转会候。*/
+.squad-candidate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
+}
+
+.squad-candidate {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 14px 15px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  transition: border-color var(--speed) var(--ease), background var(--speed) var(--ease), transform var(--speed) var(--ease);
+}
+
+.squad-candidate.is-signed {
+  border-color: var(--green);
+  background: linear-gradient(170deg, var(--green-soft), var(--surface));
+  animation: squad-pop 240ms var(--ease);
+}
+
+.squad-candidate-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.squad-candidate-name {
+  font-size: 16px;
+  font-weight: 750;
+}
+
+.squad-report {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-weak);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+
+.squad-report.is-exact {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.squad-candidate-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.squad-candidate-facts div {
+  display: flex;
+  flex-direction: column;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--surface-weak);
+}
+
+.squad-candidate-facts dt {
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.squad-candidate-facts dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 注册检查表 */
+.squad-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.squad-checklist-note {
+  font-size: 13px;
+  color: var(--ink-soft);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.squad-degraded-tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.squad-checklist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.squad-check {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.squad-check.is-pass {
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+
+.squad-check.is-fail {
+  border-color: var(--red);
+  background: var(--red-soft);
+}
+
+.squad-check.is-skipped {
+  border-style: dashed;
+  border-color: var(--line-strong);
+  background: var(--surface-weak);
+}
+
+.squad-check-mark {
+  flex: none;
+  width: 15px;
+  font-weight: 800;
+}
+
+.squad-check.is-pass .squad-check-mark {
+  color: var(--green);
+}
+
+.squad-check.is-fail .squad-check-mark {
+  color: var(--red);
+}
+
+.squad-check-label {
+  flex: 1;
+}
+
+.squad-check-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.squad-check-detail {
+  flex: 1 1 100%;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+/* 目标 */
+.squad-goal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.squad-goal {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.squad-goal.is-achieved {
+  border-style: solid;
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+
+.squad-goal-mark {
+  flex: none;
+  color: var(--ink-faint);
+  font-weight: 800;
+}
+
+.squad-goal.is-achieved .squad-goal-mark {
+  color: var(--green);
+}
+
+.squad-goal > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.squad-goal-title {
+  font-size: 13.5px;
+  font-weight: 750;
+}
+
+.squad-goal-detail {
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.65;
+}
+
+/* 设置与预。*/
+.squad-tactics-preview {
+  padding: 10px 12px;
+  border-left: 3px solid var(--theme, var(--purple));
+  border-radius: 0 8px 8px 0;
+  background: var(--surface-weak);
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.squad-tactics-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.squad-match-report {
+  padding: 10px 12px;
+  border-left: 3px solid var(--green);
+  border-radius: 0 8px 8px 0;
+  background: var(--green-soft);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  line-height: 1.7;
+}
+
+/* 结算 */
+.squad-settlement {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.squad-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.squad-subtitle {
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.squad-stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.squad-module-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.squad-module-summary li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.squad-side-modules {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.squad-side-modules li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.squad-side-goals {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--ink-faint);
+}
+
+.squad-side-goals li {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.squad-side-goals li.is-done {
+  color: var(--ink);
+}
+
+.squad-side-goals li.is-done span:first-child {
+  color: var(--green);
+}
+
+/* 反。*/
+.squad-reflection-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.squad-reflection-option {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 11px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  text-align: left;
+  font-size: 13.5px;
+  line-height: 1.7;
+  cursor: pointer;
+  transition: border-color var(--speed) var(--ease), background var(--speed) var(--ease);
+}
+
+.squad-reflection-option:hover {
+  border-color: var(--purple);
+}
+
+.squad-reflection-option.is-selected {
+  border-color: var(--purple);
+  background: var(--purple-soft);
+}
+
+.squad-reflection-feedback {
+  margin: 6px 4px 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--green-soft);
+  color: var(--green-deep);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.squad-summary-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+  line-height: 1.75;
+}
+
+.squad-summary-lines li {
+  padding: 11px 14px;
+  border-left: 3px solid var(--theme, var(--purple));
+  border-radius: 0 8px 8px 0;
+  background: var(--surface-weak);
+}
+
+@keyframes squad-pop {
+  from {
+    opacity: 0.6;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (max-width: 680px) {
+  .squad-actions .btn {
+    flex: 1 1 100%;
+  }
+
+  .squad-candidate-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .squad-flow-rail {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

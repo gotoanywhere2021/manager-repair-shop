@@ -1,0 +1,299 @@
+/* 关卡二《球探室》专属样式。所有类名以 .scouting- 开头，颜色沿用 global.css 变量。 */
+
+.scouting-actions,
+.scouting-round-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.scouting-round-bar {
+  justify-content: space-between;
+  padding: 10px 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-weak);
+}
+
+.scouting-hint {
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  line-height: 1.6;
+}
+
+.scouting-section-title {
+  font-size: 13px;
+  font-weight: 750;
+  color: var(--ink-soft);
+}
+
+.scouting-brief-title {
+  font-size: 13px;
+  font-weight: 750;
+  color: var(--ink-soft);
+}
+
+/* ---------- 接单 ---------- */
+
+.scouting-commission {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.scouting-fault-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--red);
+  border-radius: var(--radius-sm);
+  background: var(--red-soft);
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.scouting-fault-title {
+  font-weight: 750;
+  color: #8c2620;
+}
+
+/* ---------- 区域派遣 ---------- */
+
+.scouting-regions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.scouting-region {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  transition: border-color var(--speed) var(--ease), background var(--speed) var(--ease);
+}
+
+.scouting-region.is-dispatched {
+  border-color: #9dd6b2;
+  background: var(--green-soft);
+}
+
+.scouting-region-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.scouting-region-name {
+  font-size: 15px;
+  font-weight: 750;
+}
+
+.scouting-region-desc {
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.6;
+  min-height: 38px;
+}
+
+.scouting-region .btn {
+  align-self: flex-start;
+}
+
+/* ---------- 候选与报告 ---------- */
+
+.scouting-report-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.scouting-candidate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+}
+
+.scouting-candidate {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  transition: border-color var(--speed) var(--ease), box-shadow var(--speed) var(--ease);
+}
+
+.scouting-candidate.is-unknown {
+  border-style: dashed;
+  background: var(--surface-weak);
+}
+
+.scouting-candidate.is-wide {
+  border-color: #eedcb8;
+}
+
+.scouting-candidate.is-narrow {
+  border-color: #d9d0f7;
+}
+
+.scouting-candidate.is-precise {
+  border-color: #b9e0c7;
+}
+
+.scouting-candidate.is-picked {
+  border-color: var(--green);
+  box-shadow: 0 8px 18px rgba(23, 145, 77, 0.16);
+}
+
+.scouting-candidate-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.scouting-candidate-name {
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.3;
+}
+
+.scouting-candidate-meta {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+.scouting-candidate-knowledge .meter {
+  min-width: 0;
+}
+
+.scouting-report {
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--ink-soft);
+}
+
+.scouting-candidate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+}
+
+/* ---------- 维修 ---------- */
+
+.scouting-rule-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ---------- 迁移跳过 ---------- */
+
+.scouting-skip {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+/* ---------- 归档 ---------- */
+
+.scouting-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.scouting-summary-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.scouting-summary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  counter-reset: scouting-summary;
+}
+
+.scouting-summary-list li {
+  position: relative;
+  padding: 12px 14px 12px 46px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-weak);
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--ink-soft);
+  counter-increment: scouting-summary;
+}
+
+.scouting-summary-list li::before {
+  content: counter(scouting-summary);
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--theme-soft, var(--purple-soft));
+  color: var(--theme, var(--purple-deep));
+  font-size: 11px;
+  font-weight: 800;
+}
+
+/* ---------- 响应式 ---------- */
+
+@media (max-width: 1080px) {
+  .scouting-commission,
+  .scouting-regions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .scouting-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .scouting-candidate-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .scouting-round-bar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 420px) {
+  .scouting-stat-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scouting-region,
+  .scouting-candidate {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+html[data-reduce-motion='true'] .scouting-region,
+html[data-reduce-motion='true'] .scouting-candidate {
+  transition-duration: 0.01ms !important;
+}

@@ -1,0 +1,240 @@
+import { useApp } from './AppContext';
+import { LEVELS, MECHANISM_NAMES, isLevelUnlocked, levelCardStatus, summarizeProgress } from '../game/levels';
+import type { LevelDefinition } from '../game/engine/types';
+import { Button, Chip, Meter, Panel } from '../components/Ui';
+
+const STATUS_LABEL = {
+  'not-started': '未开始',
+  'in-progress': '进行中',
+  completed: '已完成',
+} as const;
+
+const STATUS_TONE = {
+  'not-started': 'neutral',
+  'in-progress': 'amber',
+  completed: 'green',
+} as const;
+
+export function HomeScreen() {
+  const { progress, demo, startLevel, navigate } = useApp();
+  const summary = summarizeProgress(progress.completedLevels);
+  const unlockedCount = progress.unlockedMechanisms.length;
+  const cta =
+    summary.completedCount === 0
+      ? '开始维修'
+      : summary.completedCount >= LEVELS.length
+        ? '再修一遍'
+        : '继续维修';
+
+  return (
+    <div className="home">
+      <section className="home-hero">
+        <div className="hero-copy">
+          <p className="eyebrow">俱乐部系统维修台 · 足球经理教学实验</p>
+          <h1 className="hero-title">
+            经理<span className="hero-title-accent">修理铺</span>
+          </h1>
+          <p className="hero-tagline">把不好玩的足球经理，修成有选择的足球经理。</p>
+          <p className="hero-desc">
+            先试玩一个坏掉的俱乐部系统，再亲手装上战术、球探、转会与注册的真实规则，
+            用比赛记录、球探报告和注册名单，看见「选择」是怎么被改出来的。
+          </p>
+          <div className="hero-actions">
+            <Button size="lg" onClick={() => startLevel(summary.nextLevel)}>
+              {cta}
+            </Button>
+            <Button size="lg" variant="secondary" onClick={() => startLevel('tactics', { fastStart: true })}>
+              30 秒体验战术板
+            </Button>
+          </div>
+          <div className="hero-meta">
+            <Chip tone="purple" icon="🧰">
+              已完成 {summary.completedCount} / {LEVELS.length}
+            </Chip>
+            <Chip tone="green" icon="🗂">
+              图鉴 {unlockedCount} / 4
+            </Chip>
+            <button type="button" className="link-button" onClick={() => navigate({ kind: 'settings' })}>
+              设置与存档
+            </button>
+          </div>
+          <p className="hero-disclaimer">
+            非官方作品：灵感来自足球经理类游戏，不使用真实俱乐部、球员或教练名称，数值为原创简化原型。
+          </p>
+        </div>
+        <div className="hero-visual hero-pitch" aria-hidden="true">
+          <div className="bench-card bench-commission">
+            <span className="bench-tag">战术板</span>
+            <strong>有球 4-3-3</strong>
+            <p>套边 + 内收，控球时拉开宽度。</p>
+          </div>
+          <div className="bench-card bench-module">
+            <span className="bench-tag">球探报告</span>
+            <strong>知识度 42%</strong>
+            <p>“左脚，擅长内切，速度区间 78–85。”</p>
+          </div>
+          <div className="bench-card bench-mechanism">
+            <span className="bench-tag">转会报价</span>
+            <strong>€18M + 周薪 €65k</strong>
+            <p>预算与工资空间同时占用。</p>
+          </div>
+          <span className="bench-arrow">规则变化 → 决策变化</span>
+        </div>
+      </section>
+
+      <section className="how-strip" aria-label="维修流程">
+        {[
+          ['01', '接单', '读一个具体的糟糕体验。'],
+          ['02', '试玩故障', '亲自感受系统坏在哪。'],
+          ['03', '安装规则', '战术 / 球探 / 转会 / 注册。'],
+          ['04', '验证迁移', '用真实记录看懂选择的变化。'],
+        ].map(([step, title, desc]) => (
+          <div className="how-step" key={step}>
+            <span className="how-index">{step}</span>
+            <div>
+              <p className="how-title">{title}</p>
+              <p className="how-desc">{desc}</p>
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <section className="home-section">
+        <header className="section-head">
+          <div>
+            <h2 className="section-title">委托板</h2>
+            <p className="section-subtitle">四个俱乐部系统，四种被改坏的决策。正常模式按顺序解锁。</p>
+          </div>
+          <Meter
+            label="维修进度"
+            value={summary.completedCount}
+            max={LEVELS.length}
+            tone="green"
+            valueLabel={`${summary.percent}%`}
+          />
+        </header>
+        <div className="commission-grid">
+          {LEVELS.map((level) => (
+            <CommissionCard
+              key={level.id}
+              level={level}
+              status={levelCardStatus(level.id, progress)}
+              unlocked={isLevelUnlocked(level.id, progress.completedLevels)}
+              onStart={() => startLevel(level.id)}
+            />
+          ))}
+        </div>
+      </section>
+
+      <section className="home-tools">
+        <Panel
+          title="经理图鉴"
+          subtitle={`已解锁 ${unlockedCount} / 4 张卡。完成对应委托后自动记录。`}
+          tone="green"
+          actions={
+            <Button variant="secondary" onClick={() => navigate({ kind: 'codex' })}>
+              打开图鉴
+            </Button>
+          }
+        >
+          <p className="tool-copy">
+            每张卡包含：一句话定义、本关体验、决策结构、适用情况、常见误用、副作用与联动建议。
+          </p>
+          <div className="codex-mini-row" aria-hidden="true">
+            {Object.values(MECHANISM_NAMES).map((mechanism) => (
+              <span className="codex-mini" key={mechanism.zh}>
+                {mechanism.zh}
+              </span>
+            ))}
+          </div>
+        </Panel>
+        <Panel
+          title="展示模式"
+          subtitle="约 5 分钟演示完整价值，固定种子，可直接跳转。"
+          tone="amber"
+          actions={
+            <Button variant="secondary" onClick={() => navigate({ kind: 'showcase' }, 'showcase')}>
+              进入展示模式
+            </Button>
+          }
+        >
+          <p className="tool-copy">
+            给评委或朋友演示时，用固定种子重复同一场维修；演示中的操作与完成记录不会写入正式进度。
+          </p>
+          <p className="tool-note">当前演示记录：{demo.completedSteps.length} 个步骤已完成。</p>
+        </Panel>
+      </section>
+
+      <footer className="home-footer">
+        <p>
+          所有对比数字都来自你在本页的真实操作记录，不含虚构用户数据。创作参考见
+          <button type="button" className="link-button" onClick={() => navigate({ kind: 'references' })}>
+            设计参考
+          </button>
+          。
+        </p>
+        <p>《经理修理铺》v2.0 · 非官方足球经理题材 · 进度保存在本机浏览器。</p>
+      </footer>
+    </div>
+  );
+}
+
+function CommissionCard({
+  level,
+  status,
+  unlocked,
+  onStart,
+}: {
+  level: LevelDefinition;
+  status: keyof typeof STATUS_LABEL;
+  unlocked: boolean;
+  onStart: () => void;
+}) {
+  const mechanism = MECHANISM_NAMES[level.mechanismId];
+  const actionLabel = !unlocked
+    ? '完成上一关后解锁'
+    : status === 'completed'
+      ? '重新试玩'
+      : status === 'in-progress'
+        ? '继续维修'
+        : '开始维修';
+  return (
+    <article className={`commission-card${unlocked ? '' : ' is-locked'}${status === 'completed' ? ' is-completed' : ''}`}>
+      <header className="commission-card-head">
+        <span className="card-no">委托 NO.{String(level.order).padStart(2, '0')}</span>
+        {unlocked ? (
+          <Chip tone={STATUS_TONE[status]}>{STATUS_LABEL[status]}</Chip>
+        ) : (
+          <Chip tone="neutral" icon="🔒">
+            未解锁
+          </Chip>
+        )}
+      </header>
+      <div className="commission-card-body">
+        <span className="card-avatar" aria-hidden="true">
+          {level.clientAvatar}
+        </span>
+        <div>
+          <h3 className="card-title">{level.title}</h3>
+          <p className="card-client">
+            {level.clientName} · {level.clientRole}
+          </p>
+        </div>
+      </div>
+      <p className="card-complaint">“{level.complaint}”</p>
+      <div className="card-topic">
+        <span>学习系统</span>
+        <strong>{mechanism.zh}</strong>
+        <span className="card-topic-en">{mechanism.en}</span>
+      </div>
+      <Button
+        variant={unlocked ? (status === 'completed' ? 'secondary' : 'primary') : 'secondary'}
+        fullWidth
+        disabled={!unlocked}
+        onClick={onStart}
+      >
+        {actionLabel}
+      </Button>
+    </article>
+  );
+}

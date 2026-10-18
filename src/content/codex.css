@@ -1,0 +1,263 @@
+/* ==========================================================================
+   经理图鉴：沿用全局设计变量，所有自定义类名使用 .codex- 前缀。
+   ========================================================================== */
+
+.codex-page {
+  max-width: 1120px;
+}
+
+.codex-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.codex-showcase-note {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 14px 18px;
+  border: 1px dashed #ddc58e;
+  border-radius: var(--radius-sm);
+  background: var(--amber-soft);
+  color: #6c4508;
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+
+.codex-showcase-note strong {
+  font-weight: 750;
+}
+
+.codex-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.codex-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.codex-card-open {
+  border-top: 4px solid var(--purple);
+}
+
+.codex-card-open.is-showcase {
+  border-top-color: var(--amber);
+}
+
+.codex-card-locked {
+  border-style: dashed;
+  border-color: var(--line-strong);
+  background:
+    repeating-linear-gradient(135deg, rgba(124, 101, 63, 0.045) 0 12px, transparent 12px 24px),
+    var(--surface-weak);
+  box-shadow: none;
+}
+
+.codex-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.codex-card-no {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-weight: 650;
+}
+
+.codex-card-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.codex-card-title {
+  font-size: 23px;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+}
+
+.codex-card-en {
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.codex-card-definition {
+  padding: 12px 14px;
+  border-left: 3px solid var(--purple);
+  border-radius: 0 8px 8px 0;
+  background: var(--purple-soft);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.codex-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.codex-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-weak);
+}
+
+.codex-field-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  color: var(--purple-deep);
+}
+
+.codex-field-body {
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--ink-soft);
+}
+
+.codex-field-amber {
+  border-color: #eedcb8;
+  background: #fffaf0;
+}
+
+.codex-field-amber .codex-field-label {
+  color: #8a5006;
+}
+
+.codex-field-red {
+  border-color: #f0cfcb;
+  background: #fdf5f4;
+}
+
+.codex-field-red .codex-field-label {
+  color: var(--red);
+}
+
+.codex-synergies {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.codex-synergy-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.codex-synergy {
+  padding: 3px 10px;
+  border: 1px solid #ded4fa;
+  border-radius: 999px;
+  background: var(--purple-soft);
+  color: var(--purple-deep);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.codex-card-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.codex-card-foot-tag {
+  color: var(--purple-deep);
+  font-weight: 650;
+}
+
+.codex-silhouette {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: 118px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background:
+    repeating-linear-gradient(45deg, rgba(124, 101, 63, 0.05) 0 10px, transparent 10px 20px),
+    var(--surface);
+}
+
+.codex-silhouette span {
+  font-family: var(--font-display);
+  font-size: 48px;
+  line-height: 1;
+  color: var(--line-strong);
+}
+
+.codex-locked-hint {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink-soft);
+}
+
+.codex-card-locked .btn {
+  margin-top: auto;
+}
+
+.codex-footnote {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+.codex-footnote .link-button {
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .codex-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 680px) {
+  .codex-card {
+    padding: 16px;
+  }
+
+  .codex-card-title {
+    font-size: 20px;
+  }
+
+  .codex-card-definition {
+    font-size: 13px;
+  }
+}

@@ -1,0 +1,305 @@
+/* 关卡一《战术板》专属样式。所有类名以 .tactics- 开头，颜色沿用 global.css 变量。 */
+
+.tactics-split {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.tactics-split-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.tactics-brief-title {
+  font-size: 13px;
+  font-weight: 750;
+  color: var(--ink-soft);
+}
+
+.tactics-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.tactics-hint {
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  line-height: 1.6;
+}
+
+/* ---------- 球场与站位 ---------- */
+
+.tactics-pitch {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 12px;
+  border-radius: var(--radius);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.16), transparent 46%),
+    linear-gradient(160deg, var(--theme, #2f8f5b), color-mix(in srgb, var(--theme, #2f8f5b) 70%, #17321f));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+}
+
+.tactics-pitch-fault {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.12), transparent 46%),
+    linear-gradient(160deg, #7a6a4d, #4a3d29);
+}
+
+.tactics-pitch-possession {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.16), transparent 46%),
+    linear-gradient(160deg, #3c7f5a, #235840);
+}
+
+.tactics-pitch-out {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.14), transparent 46%),
+    linear-gradient(160deg, #40637f, #263d52);
+}
+
+.tactics-pitch-caption {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.tactics-pitch-field {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 230px;
+  padding: 12px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 12px;
+  background-image:
+    linear-gradient(to bottom, transparent calc(50% - 1px), rgba(255, 255, 255, 0.3) calc(50% - 1px), rgba(255, 255, 255, 0.3) calc(50% + 1px), transparent calc(50% + 1px));
+}
+
+.tactics-pitch-row {
+  display: flex;
+  justify-content: space-around;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.tactics-player {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tactics-player-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fffdf6;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.tactics-player-name {
+  font-size: 9.5px;
+  line-height: 1.25;
+  color: rgba(255, 255, 255, 0.9);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.tactics-pitch-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.tactics-pitch-pair .tactics-pitch-field {
+  min-height: 200px;
+  gap: 10px;
+}
+
+/* ---------- 指令按钮 ---------- */
+
+.tactics-instruction-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tactics-instruction.btn {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-height: 72px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  white-space: normal;
+}
+
+.tactics-instruction-name {
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.tactics-instruction-hint {
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.tactics-instruction:disabled .tactics-instruction-hint {
+  color: var(--ink-faint);
+}
+
+/* ---------- 指标 ---------- */
+
+.tactics-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-weak);
+}
+
+.tactics-metrics .meter {
+  min-width: 0;
+}
+
+/* ---------- 维修选择 ---------- */
+
+.tactics-pickers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.tactics-config-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ---------- 归档 ---------- */
+
+.tactics-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.tactics-summary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  counter-reset: tactics-summary;
+}
+
+.tactics-summary-list li {
+  position: relative;
+  padding: 12px 14px 12px 46px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-weak);
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--ink-soft);
+  counter-increment: tactics-summary;
+}
+
+.tactics-summary-list li::before {
+  content: counter(tactics-summary);
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--theme-soft, var(--purple-soft));
+  color: var(--theme, var(--purple-deep));
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.tactics-skip {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+/* ---------- 动效与响应式 ---------- */
+
+.tactics-player-dot,
+.tactics-instruction,
+.tactics-pitch {
+  transition: background var(--speed) var(--ease), border-color var(--speed) var(--ease), transform 180ms var(--ease);
+}
+
+@media (max-width: 1080px) {
+  .tactics-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tactics-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .tactics-instruction-grid,
+  .tactics-pickers,
+  .tactics-pitch-pair,
+  .tactics-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tactics-pitch-field {
+    min-height: 210px;
+  }
+
+  .tactics-pitch-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 420px) {
+  .tactics-pitch-field {
+    min-height: 190px;
+    padding: 10px 4px;
+  }
+
+  .tactics-player-name {
+    font-size: 8.5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tactics-player-dot,
+  .tactics-instruction,
+  .tactics-pitch {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+html[data-reduce-motion='true'] .tactics-player-dot,
+html[data-reduce-motion='true'] .tactics-instruction,
+html[data-reduce-motion='true'] .tactics-pitch {
+  transition-duration: 0.01ms !important;
+}
