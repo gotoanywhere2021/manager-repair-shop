@@ -242,6 +242,44 @@
   font-size: 12px;
 }
 
+.codex-knowledge {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.codex-knowledge-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.codex-knowledge-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-weak);
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease), background var(--speed) var(--ease);
+}
+
+.codex-knowledge-link:hover {
+  border-color: var(--purple);
+  background: var(--purple-soft);
+  color: var(--purple-deep);
+}
+
+.codex-knowledge-link span {
+  font-size: 10px;
+}
+
 @media (max-width: 900px) {
   .codex-grid {
     grid-template-columns: minmax(0, 1fr);

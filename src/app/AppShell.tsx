@@ -4,6 +4,7 @@ import { SettingsScreen } from './SettingsScreen';
 import { CodexScreen } from './CodexScreen';
 import { ShowcaseScreen } from './ShowcaseScreen';
 import { ReferencesScreen } from './ReferencesScreen';
+import { KnowledgeScreen } from './KnowledgeScreen';
 import { LevelPage } from './LevelPage';
 import { Button } from '../components/Ui';
 import type { Route } from './AppContext';
@@ -53,5 +54,7 @@ function renderRoute(route: Route) {
       return <SettingsScreen />;
     case 'references':
       return <ReferencesScreen />;
+    case 'knowledge':
+      return <KnowledgeScreen topicId={route.topicId} />;
   }
 }

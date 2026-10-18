@@ -1,0 +1,550 @@
+/* 机制原理馆：把底层机制知识做得像一本可翻阅的维修手册 */
+
+.knowledge-page {
+  max-width: 1180px;
+}
+
+.knowledge-hero .page-lead {
+  max-width: 72ch;
+}
+
+.knowledge-title-accent {
+  color: var(--purple);
+}
+
+.knowledge-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.knowledge-flow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.knowledge-flow-step {
+  display: flex;
+  gap: 9px;
+  padding: 12px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.knowledge-flow-index {
+  font-family: var(--font-display);
+  font-size: 20px;
+  line-height: 1;
+  color: var(--purple);
+  opacity: 0.75;
+}
+
+.knowledge-flow-title {
+  font-size: 12.5px;
+  font-weight: 750;
+  line-height: 1.4;
+}
+
+.knowledge-flow-body {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.knowledge-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.knowledge-section-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.knowledge-level-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.knowledge-level-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 22px 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  scroll-margin-top: 84px;
+  transition: box-shadow 260ms var(--ease), border-color 260ms var(--ease);
+}
+
+.knowledge-level-card.is-highlighted {
+  border-color: var(--purple);
+  box-shadow: 0 0 0 3px rgba(107, 76, 255, 0.14), var(--shadow);
+  animation: knowledge-highlight 1.6s var(--ease);
+}
+
+@keyframes knowledge-highlight {
+  0% {
+    background: #f3efff;
+  }
+  100% {
+    background: var(--surface);
+  }
+}
+
+.knowledge-level-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.knowledge-level-order {
+  flex: none;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--surface-weak);
+  color: var(--ink-faint);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.knowledge-level-title {
+  font-size: 21px;
+  line-height: 1.3;
+}
+
+.knowledge-level-en {
+  margin-top: 2px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+}
+
+.knowledge-level-head .chip {
+  margin-left: auto;
+}
+
+.knowledge-level-tagline {
+  padding-left: 12px;
+  border-left: 3px solid var(--purple);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.knowledge-level-summary {
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.knowledge-level-sections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.knowledge-sub {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-weak);
+}
+
+.knowledge-sub h4 {
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.knowledge-sub p {
+  font-size: 13px;
+  color: var(--ink-soft);
+  line-height: 1.7;
+}
+
+.knowledge-sub ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.knowledge-sub li {
+  position: relative;
+  padding-left: 14px;
+}
+
+.knowledge-sub li::before {
+  content: '→';
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--purple);
+  font-weight: 700;
+}
+
+.knowledge-question-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.knowledge-mini-title {
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+  margin-bottom: 6px;
+}
+
+.knowledge-question-list,
+.knowledge-pitfall-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.knowledge-question-list li {
+  position: relative;
+  padding-left: 16px;
+}
+
+.knowledge-question-list li::before {
+  content: '?';
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--purple);
+  font-weight: 700;
+}
+
+.knowledge-pitfall-list li {
+  position: relative;
+  padding-left: 16px;
+}
+
+.knowledge-pitfall-list li::before {
+  content: '⚠';
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--amber);
+  font-size: 10px;
+}
+
+.knowledge-level-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+
+/* 书目参考 chips */
+.knowledge-refs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 9px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.knowledge-refs-label {
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin-right: 2px;
+}
+
+.knowledge-ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--surface-weak);
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.knowledge-ref-chip strong {
+  color: var(--purple-deep);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+.knowledge-ref-chapter {
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+
+/* 基础课 */
+.knowledge-foundation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.knowledge-foundation {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  scroll-margin-top: 84px;
+}
+
+.knowledge-foundation[open] {
+  border-color: #d9d0f7;
+  background: linear-gradient(170deg, #fbf9ff, var(--surface));
+}
+
+.knowledge-foundation summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 13px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.knowledge-foundation summary::-webkit-details-marker {
+  display: none;
+}
+
+.knowledge-foundation summary::after {
+  content: '＋';
+  margin-left: auto;
+  color: var(--ink-faint);
+  font-weight: 700;
+}
+
+.knowledge-foundation[open] summary::after {
+  content: '－';
+}
+
+.knowledge-foundation-title {
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.knowledge-foundation-en {
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+}
+
+.knowledge-foundation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 0 16px 15px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  line-height: 1.7;
+}
+
+.knowledge-foundation-body strong {
+  color: var(--ink);
+}
+
+/* 解剖 */
+.knowledge-anatomy {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.knowledge-anatomy-step {
+  position: relative;
+  padding: 15px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.knowledge-anatomy-step::after {
+  content: '→';
+  position: absolute;
+  right: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--purple);
+  font-weight: 800;
+  z-index: 1;
+}
+
+.knowledge-anatomy-step:last-child::after {
+  display: none;
+}
+
+.knowledge-anatomy-step-label {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--purple-soft);
+  color: var(--purple-deep);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.knowledge-anatomy-step h3 {
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.knowledge-anatomy-step p {
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  line-height: 1.65;
+}
+
+/* 清单与术语 */
+.knowledge-two-col {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.knowledge-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  list-style: decimal;
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  line-height: 1.7;
+}
+
+.knowledge-glossary {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-height: 520px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.knowledge-glossary-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--line);
+}
+
+.knowledge-glossary-row:last-child {
+  border-bottom: none;
+}
+
+.knowledge-glossary dt {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.knowledge-glossary dt span {
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--ink-faint);
+}
+
+.knowledge-glossary dd {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+/* 书目 */
+.knowledge-book-title {
+  font-size: 16px;
+  font-weight: 750;
+}
+
+.knowledge-book-meta {
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.knowledge-book-note {
+  font-size: 12px;
+  color: var(--ink-faint);
+  line-height: 1.7;
+}
+
+.knowledge-book-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+@media (max-width: 1180px) {
+  .knowledge-flow,
+  .knowledge-anatomy {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .knowledge-anatomy-step::after {
+    display: none;
+  }
+}
+
+@media (max-width: 960px) {
+  .knowledge-level-sections,
+  .knowledge-question-grid,
+  .knowledge-foundation-grid,
+  .knowledge-two-col {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .knowledge-flow,
+  .knowledge-anatomy {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .knowledge-glossary {
+    max-height: none;
+  }
+}
+
+@media (max-width: 620px) {
+  .knowledge-level-card {
+    padding: 17px;
+  }
+
+  .knowledge-flow,
+  .knowledge-anatomy {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .knowledge-level-head .chip {
+    margin-left: 0;
+  }
+}

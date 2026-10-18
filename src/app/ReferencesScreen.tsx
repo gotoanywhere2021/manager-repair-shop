@@ -1,4 +1,5 @@
 import { useApp } from './AppContext';
+import { BOOK_REFERENCE } from '../content/mechanismKnowledge';
 import { Button, Panel } from '../components/Ui';
 
 export function ReferencesScreen() {
@@ -25,6 +26,21 @@ export function ReferencesScreen() {
           系统的选题方向参考了《Football Manager 26》官方公开的功能介绍（双形态战术、比赛日、球探、转会、国际管理），
           参考地址：footballmanager.com/fm26/features 。本作没有复制其界面、图标、文本、数据库或规则表。
         </p>
+      </Panel>
+
+      <Panel title="机制知识参考">
+        <p className="tool-copy">
+          《{BOOK_REFERENCE.title}》（{BOOK_REFERENCE.originalTitle}），作者 {BOOK_REFERENCE.authors}，
+          {BOOK_REFERENCE.chineseEdition}，ISBN {BOOK_REFERENCE.isbn}。
+        </p>
+        <p className="tool-copy">
+          游戏内「机制原理馆」的机制分类与分析问题参考了这本书的拆解方式；文字是对相关概念的原创中文概括，
+          不复制原书正文、图表或扫描图片，也不标注页码。机制编号只用于方便读者回到书目中查对。
+        </p>
+        <p className="tool-copy">{BOOK_REFERENCE.copyrightNote}</p>
+        <Button variant="secondary" onClick={() => navigate({ kind: 'knowledge' })}>
+          打开机制原理馆
+        </Button>
       </Panel>
 
       <Panel title="原创部分" tone="green">

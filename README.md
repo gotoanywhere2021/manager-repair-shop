@@ -18,6 +18,14 @@
 
 ---
 
+## 本轮改进（v5.0.0）
+
+- **新增「机制原理馆」**：把四关背后的桌游机制讲清楚——行动选取与限制、工人放置、拍卖与谈判、成套收集；包含四关机制专题、十节基础课、机制解剖、术语表、分析清单与书目引用。
+- **关卡内直达**：每关顶栏「机制原理」会跳到本关对应的底层知识；经理图鉴每张卡的「底层机制」入口也会跳转。
+- **原创概括 + 书目引用**：参考《桌面游戏设计的基石：机制百科全书》（Geoffrey Engelstein、Isaac Shalev）的机制分类与分析方式，用原创中文重新解释，不复制原文/图表，不标页码。
+- **导读文档**：`docs/mechanism-primer.md` 提供课外的完整文字版；游戏内可按需查阅。
+- **测试**：202 → 210 个测试，新增机制原理内容完整性与入口流程覆盖。
+
 ## 本轮改进（v4.0.0）
 
 - **拿掉答案提示**：不再给模块贴「推荐 / 有副作用 / 错误模块」标签，不再提供「推荐组合」快捷按钮；玩家要自己看效果与副作用做判断。
@@ -54,6 +62,10 @@
 | --- | --- |
 | ![赛季名单](docs/screenshots/level-squad.png) | ![图鉴](docs/screenshots/codex.png) |
 
+| 机制原理馆 | 从关卡深链到机制专题 |
+| --- | --- |
+| ![机制原理馆](docs/screenshots/knowledge.png) | ![深链专题](docs/screenshots/knowledge-deeplink.png) |
+
 ---
 
 ## 快速开始
@@ -86,6 +98,7 @@ pnpm preview    # 本地预览生产构建
 - **模块池与失败重试**：每关在正确模块之外提供有诱惑力但会拖累结果的备选模块；不贴「推荐/错误」标签，验证前可自由安装/卸载；允许不装齐模块直接验证，结果真实变差；目标未达成时可回到维修台重新配置，清空本轮成绩、保留故障证据，并让俱乐部承担真实返工成本（从转会预算扣除、累计返工次数）。
 - 共用维修面板、模块卡、诊断/迁移题卡、事件日志、对比表格、维修证据面板。
 - 四张经理图鉴卡（双形态战术 / 球探网络 / 转会谈判 / 阵容注册），带解锁与未解锁状态。
+- **机制原理馆**：四关对应的底层机制专题 + 十节机制基础课 + 机制解剖 + 30 条术语 + 8 条分析清单；支持从关卡顶栏与图鉴卡深链到对应专题。课外完整导读见 [docs/mechanism-primer.md](docs/mechanism-primer.md)。
 - 本地进度保存：关卡状态、完成记录、图鉴解锁、俱乐部时间线、设置；坏档与版本不兼容安全回退并提示。
 - 一键重玩当前关卡、重置全部进度（带确认）。
 - 减少动态效果设置，尊重系统 `prefers-reduced-motion`。
@@ -135,11 +148,12 @@ pnpm preview    # 本地预览生产构建
 
 ```text
 src/
-  app/                 # 路由外壳、主页、设置、图鉴页、展示模式页、关卡页
+  app/                 # 路由外壳、主页、设置、图鉴页、展示模式页、关卡页、机制原理馆
     App.tsx            # 全局状态、hash 路由、进度持久化、模式切换
     AppContext.tsx     # useApp() 提供的上下文类型
     HomeScreen.tsx     # 修理铺主页、委托卡与俱乐部办公室
     LevelPage.tsx      # 关卡顶栏 + 关卡组件挂载
+    KnowledgeScreen.tsx# 机制原理馆：四关机制、基础课、术语表、分析清单
     levelRegistry.tsx  # 关卡 id → 组件
   components/          # 通用界面（纯展示/交互，不含规则）
     Ui.tsx             # Button/Panel/Chip/Callout/StatTile/RiskMeter/Toggle/Dialog 等
@@ -158,12 +172,13 @@ src/
     levels/scouting/   # 关卡二：logic.ts + ScoutingLevel.tsx + scouting.css
     levels/transfers/  # 关卡三：logic.ts + TransfersLevel.tsx + transfers.css
     levels/squad/      # 毕业关：logic.ts + SquadLevel.tsx + squad.css
-  content/             # 经理图鉴、展示模式步骤与文案
+  content/             # 经理图鉴、展示模式步骤、机制原理馆、文案与样式
   storage/
     persistence.ts     # localStorage 读写、schema 校验、俱乐部时间线、坏档回退
   styles/
     global.css         # 设计变量、基础布局与共享组件样式
 tests/                 # 规则单测 + 用户流程冒烟测试
+docs/                  # 机制底层知识导读与验收截图
 docs/screenshots/      # 验收截图
 .github/workflows/     # GitHub Actions：类型检查 / 测试 / 构建 / Pages 部署
 LICENSE                # MIT
@@ -212,9 +227,10 @@ pnpm build       # 类型检查 + 生产构建
 - `tests/transfers.test.ts`：预算/工资双约束、报价档位、等待与竞争、错误模块、失败重试、窗口结束、UI 冒烟与 clubUpdate。
 - `tests/squad.test.ts`：注册规则、位置覆盖/青训、错误模块、动态反事实题、重开、实时校验器、UI 冒烟与 clubUpdate。
 - `tests/codex.test.ts`：四张卡完整、机制覆盖、名称与元数据一致。
+- `tests/knowledge.test.ts`：四关机制专题、十节基础课、术语表、分析清单、机制映射与书目引用完整性。
 - `tests/storage.test.ts`：保存/读取 roundtrip、损坏 JSON 回退、版本不兼容回退、存储不可用回退、清空存档、非法数据清洗、俱乐部时间线。
 - `tests/progress.test.ts`：正常完成解锁图鉴与下一关、重复完成幂等、展示模式不写正式进度、解锁顺序、俱乐部时间线追加、演示进度去重。
-- `tests/app-flow.test.tsx`：主页 → 第一关 → 故障试玩 → 保存/恢复；俱乐部办公室时间线；展示模式不影响正式进度；按顺序解锁毕业关；设置页重置进度；30 秒体验入口。
+- `tests/app-flow.test.tsx`：主页 → 第一关 → 故障试玩 → 保存/恢复；俱乐部办公室时间线；机制原理馆入口/深链；展示模式不影响正式进度；按顺序解锁毕业关；设置页重置进度；30 秒体验入口。
 
 ### 本次实际运行过的检查（2026-10-18）
 
@@ -222,8 +238,8 @@ pnpm build       # 类型检查 + 生产构建
 | --- | --- | --- |
 | 安装依赖 | `pnpm install` | 退出码 0（pnpm 11，esbuild 构建脚本已允许） |
 | 类型检查 | `pnpm typecheck`（`tsc --noEmit`） | 0 错误 |
-| 自动化测试 | `pnpm test`（`vitest run`） | 8 个测试文件 / **202 个测试全部通过** |
-| 生产构建 | `pnpm build` | 成功；按 vendor + 四关拆分 chunk（vendor 221.70 kB / gzip 68.96 kB，各关卡 49–79 kB，入口 51.78 kB），CSS 合计约 80 kB / gzip 16.4 kB |
+| 自动化测试 | `pnpm test`（`vitest run`） | 9 个测试文件 / **210 个测试全部通过** |
+| 生产构建 | `pnpm build` | 成功；vendor 221.70 kB / gzip 68.96 kB，入口 90.79 kB，各关卡 49–79 kB；CSS 合计约 88 kB / gzip 17.5 kB |
 | 生产预览 + 无头浏览器 | `pnpm preview` + Chrome CDP | 主页、四关、图鉴、展示模式均可打开，无控制台错误 |
 | 响应式检查 | 无头 Chrome 在 1440 / 768 / 390 宽度 | 页面无横向滚动（`scrollWidth = innerWidth`），窄屏布局正常 |
 | 正常模式端到端 | 无头浏览器自动点击战术板全流程 | 故障版 → 诊断 → 模块池安装 → 3 个比赛阶段 → 迁移 → 归档；localStorage schema v2，完成记录 `["tactics"]`，俱乐部时间线新增真实结果，第二关与图鉴解锁 |
@@ -264,6 +280,7 @@ Playwright 未安装、未执行；用户流程由 Vitest + Testing Library 的 
 - **球探候选上限**：转会窗只带入球探室报告质量最高的前 2 名候选，不会带入未考察的信息。
 - 展示模式的迁移/反思步骤可跳过并标注「演示跳过迁移题」，跳过后 evidence.transferred=false，不计正式完成。
 - **还没有真实用户研究**：「30 秒进入」「单关约 4 分钟」「展示约 5 分钟」是设计目标，不是已测数据。
+- **机制原理馆是导读，不是原书替代品**：内容是对机制分类的原创中文概括，适合配合游戏理解概念；要系统查阅机制条目，请读原书。不复制原文/图表，也不标注页码。
 
 ---
 
@@ -281,7 +298,8 @@ Playwright 未安装、未执行；用户流程由 Vitest + Testing Library 的 
 - **虚构内容**：所有俱乐部、球员、教练均为原创虚构名称；不使用真实队徽、球员照片或商业游戏素材。
 - **存档结构**：`manager-repair-shop.progress.v2` 与 `manager-repair-shop.settings.v1`；新增 `club` 时间线并兼容旧档，版本不兼容或 JSON 损坏时回退默认进度并提示。
 - **工程**：GitHub Actions 跑类型检查、测试、构建并部署 gh-pages；vendor 与四关拆分为独立 chunk；MIT License。
-- **路由**：hash 路由（`#/level/tactics` 等），无需服务端配置，静态托管即可运行。
+- **机制知识层**：把四关映射到桌游机制（行动选取与限制、工人放置、拍卖/谈判、成套收集），用「规则 → 选择 → 信息 → 体验 → 迁移」框架讲解；内容为原创概括并注明书目出处，不复制原文。
+- **路由**：hash 路由（`#/level/tactics`、`#/knowledge/level-scouting` 等），无需服务端配置，静态托管即可运行。
 
 ---
 

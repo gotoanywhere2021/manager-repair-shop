@@ -2,6 +2,7 @@ import { useApp } from './AppContext';
 import { getLevel, isLevelUnlocked } from '../game/levels';
 import type { LevelId } from '../game/engine/types';
 import { LEVEL_COMPONENTS } from './levelRegistry';
+import { KNOWLEDGE_FOR_LEVEL } from '../content/mechanismKnowledge';
 import { Button, Chip, EmptyState } from '../components/Ui';
 
 export function LevelPage({ levelId }: { levelId: LevelId }) {
@@ -56,6 +57,13 @@ export function LevelPage({ levelId }: { levelId: LevelId }) {
         </div>
         <div className="level-topbar-actions">
           {mode === 'showcase' && <Chip tone="amber">演示模式 · 固定种子</Chip>}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate({ kind: 'knowledge', topicId: KNOWLEDGE_FOR_LEVEL[levelId] })}
+          >
+            机制原理
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => replayLevel(levelId)}>
             重玩本关
           </Button>

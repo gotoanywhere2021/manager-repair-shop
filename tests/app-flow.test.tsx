@@ -178,4 +178,24 @@ describe('用户流程冒烟测试（足球经理题材）', () => {
     expect(screen.getByRole('heading', { name: '战术板' })).toBeTruthy();
     expect(screen.getByText('故障试玩：固定一套 4-4-2')).toBeTruthy();
   });
+
+  it('主页可以打开机制原理馆，并读到四关底层机制', () => {
+    render(<App />);
+    clickButton('机制原理');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toContain('底层知识');
+    expect(screen.getByText('四关的底层机制')).toBeTruthy();
+    expect(screen.getByText('机制基础课')).toBeTruthy();
+    expect(screen.getByText('双形态战术：把“阶段”变成两套规则')).toBeTruthy();
+    expect(screen.getByText('球探网络：把“信息”做成有限资源')).toBeTruthy();
+    expect(screen.getAllByText(/术语表/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/机制百科全书/).length).toBeGreaterThan(0);
+  });
+
+  it('关卡顶栏可以深链到该关的机制原理', () => {
+    render(<App />);
+    fireEvent.click(screen.getAllByRole('button', { name: '开始维修' })[0]);
+    clickButton('机制原理');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toContain('底层知识');
+    expect(screen.getByText('双形态战术：把“阶段”变成两套规则')).toBeTruthy();
+  });
 });

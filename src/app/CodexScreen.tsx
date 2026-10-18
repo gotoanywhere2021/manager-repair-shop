@@ -2,6 +2,11 @@ import { useApp } from './AppContext';
 import { Button, Chip } from '../components/Ui';
 import { CODEX_CARDS, CODEX_LOCKED_HINT } from '../content/codex';
 import type { CodexCard } from '../content/codex';
+import {
+  KNOWLEDGE_FOR_MECHANISM,
+  getFoundation,
+  getKnowledgeTopic,
+} from '../content/mechanismKnowledge';
 import { getLevel, isLevelUnlocked } from '../game/levels';
 import type { LevelDefinition } from '../game/engine/types';
 import '../content/codex.css';
@@ -50,6 +55,9 @@ export function CodexScreen() {
               返回演示流程
             </Button>
           )}
+          <Button variant="secondary" size="sm" onClick={() => navigate({ kind: 'knowledge' })}>
+            打开机制原理馆
+          </Button>
         </div>
       </header>
 
@@ -73,6 +81,7 @@ export function CodexScreen() {
               unlocked={unlocked}
               showcase={isShowcase}
               onGoToLevel={() => handleGoToLevel(card)}
+              onOpenKnowledge={(id) => navigate({ kind: 'knowledge', topicId: id })}
             />
           );
         })}
@@ -102,6 +111,7 @@ function CodexCardView({
   unlocked,
   showcase,
   onGoToLevel,
+  onOpenKnowledge,
 }: {
   card: CodexCard;
   index: number;
@@ -109,6 +119,7 @@ function CodexCardView({
   unlocked: boolean;
   showcase: boolean;
   onGoToLevel: () => void;
+  onOpenKnowledge: (topicId: string) => void;
 }) {
   if (!unlocked) {
     return (
@@ -169,6 +180,26 @@ function CodexCardView({
             </li>
           ))}
         </ul>
+      </div>
+
+      <div className="codex-knowledge">
+        <span className="codex-field-label">底层机制</span>
+        <div className="codex-knowledge-links">
+          {KNOWLEDGE_FOR_MECHANISM[card.mechanismId].map((topicId) => {
+            const topic = getKnowledgeTopic(topicId) ?? getFoundation(topicId);
+            return (
+              <button
+                type="button"
+                className="codex-knowledge-link"
+                key={topicId}
+                onClick={() => onOpenKnowledge(topicId)}
+              >
+                {topic?.title ?? topicId}
+                <span aria-hidden="true">→</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <footer className="codex-card-foot">

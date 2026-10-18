@@ -62,6 +62,9 @@ export function HomeScreen() {
             <Chip tone="green" icon="🗂">
               图鉴 {unlockedCount} / 4
             </Chip>
+            <button type="button" className="link-button" onClick={() => navigate({ kind: 'knowledge' })}>
+              机制原理
+            </button>
             <button type="button" className="link-button" onClick={() => navigate({ kind: 'settings' })}>
               设置与存档
             </button>
@@ -159,6 +162,28 @@ export function HomeScreen() {
           </div>
         </Panel>
         <Panel
+          title="机制原理馆"
+          subtitle="四关背后的桌游机制知识：行动选取、工人放置、拍卖与谈判、成套收集。"
+          tone="purple"
+          actions={
+            <Button variant="secondary" onClick={() => navigate({ kind: 'knowledge' })}>
+              打开原理馆
+            </Button>
+          }
+        >
+          <p className="tool-copy">
+            从「规则 → 选择 → 体验」拆解每个系统：它借用了哪类桌游机制、为什么会产生这种体验、常见误用是什么。
+            先玩一关再读，效果最好。
+          </p>
+          <div className="codex-mini-row" aria-hidden="true">
+            {['行动选取', '工人放置', '拍卖与谈判', '成套收集'].map((label) => (
+              <span className="codex-mini" key={label}>
+                {label}
+              </span>
+            ))}
+          </div>
+        </Panel>
+        <Panel
           title="展示模式"
           subtitle="约 5 分钟演示完整价值，固定种子，可直接跳转。"
           tone="amber"
@@ -183,7 +208,7 @@ export function HomeScreen() {
           </button>
           。
         </p>
-        <p>《经理修理铺》v4.0 · 非官方足球经理题材 · 进度保存在本机浏览器。</p>
+        <p>《经理修理铺》v5.0 · 非官方足球经理题材 · 进度保存在本机浏览器。</p>
       </footer>
     </div>
   );

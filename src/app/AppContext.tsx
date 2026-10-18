@@ -9,7 +9,8 @@ export type Route =
   | { kind: 'codex' }
   | { kind: 'showcase' }
   | { kind: 'settings' }
-  | { kind: 'references' };
+  | { kind: 'references' }
+  | { kind: 'knowledge'; topicId?: string };
 
 export type DemoState = DemoProgress;
 

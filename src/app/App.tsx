@@ -42,6 +42,8 @@ function routeToHash(route: Route, mode: GameMode): string {
       return '#/settings';
     case 'references':
       return '#/references';
+    case 'knowledge':
+      return route.topicId ? `#/knowledge/${route.topicId}` : '#/knowledge';
   }
 }
 
@@ -61,6 +63,12 @@ function parseHash(hash: string): { route: Route; mode: GameMode } {
   if (segments[0] === 'codex') return { route: { kind: 'codex' }, mode: 'normal' };
   if (segments[0] === 'settings') return { route: { kind: 'settings' }, mode: 'normal' };
   if (segments[0] === 'references') return { route: { kind: 'references' }, mode: 'normal' };
+  if (segments[0] === 'knowledge') {
+    return {
+      route: { kind: 'knowledge', topicId: segments[1] ? decodeURIComponent(segments[1]) : undefined },
+      mode: 'normal',
+    };
+  }
   return { route: { kind: 'home' }, mode: 'normal' };
 }
 
